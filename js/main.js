@@ -28,6 +28,7 @@
                               // because it needs a resolved ride height
     running: true,
     smoke: true,
+    ribbons: true,            // smoke-wand streaklines
     nParticles: 9000,
     flowSpeed: 14,
     slice: true,
@@ -322,6 +323,7 @@
 
     buildBody(true);            // before the particles — seeding needs the body
     buildParticles(nx, ny, nz);
+    buildRibbons();
     buildSlice();
     buildStreamlines();
 
@@ -330,6 +332,7 @@
     orbit.update();
 
     points.visible = S.smoke;
+    ribbons.visible = S.ribbons;
     sliceMesh.visible = S.slice;
     lineMesh.visible = S.streamlines;
     applyThemeColors();         // the meshes above were just recreated
@@ -672,6 +675,146 @@
     }
     pGeo.attributes.position.needsUpdate = true;
     pGeo.attributes.color.needsUpdate = true;
+  }
+
+  // ---- smoke ribbons (streaklines) -------------------------------------
+  // A real tunnel's smoke wand emits continuously from a fixed nozzle, and
+  // what you see is the *streakline*: every particle ever released from that
+  // point, joined up. That is not the same as a streamline once the flow is
+  // unsteady — streaklines are the things that visibly roll up into vortices
+  // behind a bluff body, which is exactly what makes tunnel footage readable.
+  //
+  // Each wand keeps a polyline: advect every point, then push a fresh point
+  // in at the nozzle. Drawn as camera-facing quads because WebGL will not
+  // give us line thickness.
+  const RIB_LEN = 88;
+  let ribbons, rbGeo, rbPos, rbCol, rbSeeds, rbPts, rbSpd, rbN = 0;
+
+  function buildRibbons() {
+    if (ribbons) { scene.remove(ribbons); ribbons.geometry.dispose(); }
+    const ny = 7, nz = 5;
+    rbN = ny * nz;
+    rbSeeds = new Float32Array(rbN * 3);
+    rbPts = new Float32Array(rbN * RIB_LEN * 3);
+    rbSpd = new Float32Array(rbN * RIB_LEN);   // cached at advection time
+    const verts = rbN * RIB_LEN * 2;
+    rbPos = new Float32Array(verts * 3);
+    rbCol = new Float32Array(verts * 3);
+    const idx = [];
+    for (let w = 0; w < rbN; w++) {
+      const base = w * RIB_LEN * 2;
+      for (let i = 0; i < RIB_LEN - 1; i++) {
+        const a = base + i * 2;
+        idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+      }
+    }
+    rbGeo = new THREE.BufferGeometry();
+    rbGeo.setAttribute('position', new THREE.BufferAttribute(rbPos, 3));
+    rbGeo.setAttribute('color', new THREE.BufferAttribute(rbCol, 3));
+    rbGeo.setIndex(idx);
+    ribbons = new THREE.Mesh(rbGeo, new THREE.MeshBasicMaterial({
+      vertexColors: true, transparent: true, opacity: 0.9,
+      side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending
+    }));
+    ribbons.frustumCulled = false;
+    scene.add(ribbons);
+    seedRibbons();
+  }
+
+  /** Park the wands on a rake upstream, sized to the body. */
+  function seedRibbons() {
+    if (!rbN || !body) return;
+    const { ny, nz } = sim;
+    const ey = body.ext[1] * body.scale, ez = body.ext[2] * body.scale;
+    const cy = S.ground ? body.pos[1] + ey * 0.5 : body.pos[1];
+    const sy = Math.min(ny * 0.42, Math.max(3, ey * (S.ground ? 1.15 : 1.5)));
+    const sz = Math.min(nz * 0.42, Math.max(3, ez * 1.5));
+    const NY = 7, NZ = 5;
+    for (let a = 0; a < NY; a++) {
+      for (let b = 0; b < NZ; b++) {
+        const w = a * NZ + b;
+        const y = clamp(cy + (a / (NY - 1) - 0.5) * 2 * sy, 1.4, ny - 1.6);
+        const z = clamp(cz(b, NZ, sz), 1.4, nz - 1.6);
+        rbSeeds[w * 3] = 2.0; rbSeeds[w * 3 + 1] = y; rbSeeds[w * 3 + 2] = z;
+        for (let i = 0; i < RIB_LEN; i++) {      // start collapsed at the nozzle
+          const o = (w * RIB_LEN + i) * 3;
+          rbPts[o] = 2.0; rbPts[o + 1] = y; rbPts[o + 2] = z;
+        }
+      }
+    }
+    function cz(b, NZ, sz) { return body.pos[2] + (b / (NZ - 1) - 0.5) * 2 * sz; }
+  }
+
+  function updateRibbons(dt) {
+    const k = S.flowSpeed * dt;
+    for (let w = 0; w < rbN; w++) {
+      const b = w * RIB_LEN * 3;
+      const sb = w * RIB_LEN;
+      for (let i = 0; i < RIB_LEN; i++) {
+        const o = b + i * 3;
+        const x = rbPts[o], y = rbPts[o + 1], z = rbPts[o + 2];
+        sim.sample(x, y, z, tmpV);
+        rbSpd[sb + i] = Math.hypot(tmpV[0], tmpV[1], tmpV[2]);
+        const nx2 = x + tmpV[0] * k, ny2 = y + tmpV[1] * k, nz2 = z + tmpV[2] * k;
+        // never let smoke wander inside the body
+        if (!sim.isSolid(nx2, ny2, nz2)) {
+          rbPts[o] = nx2; rbPts[o + 1] = ny2; rbPts[o + 2] = nz2;
+        }
+      }
+      // slide the trail along and emit a fresh puff at the nozzle
+      rbPts.copyWithin(b + 3, b, b + (RIB_LEN - 1) * 3);
+      rbSpd.copyWithin(sb + 1, sb, sb + RIB_LEN - 1);
+      rbPts[b] = rbSeeds[w * 3];
+      rbPts[b + 1] = rbSeeds[w * 3 + 1];
+      rbPts[b + 2] = rbSeeds[w * 3 + 2];
+      rbSpd[sb] = rbSpd[sb + 1];
+    }
+    ribbonGeometry();
+  }
+
+  /** Expand each polyline into camera-facing quads. */
+  function ribbonGeometry() {
+    const cx = camera.position.x, cy = camera.position.y, cz = camera.position.z;
+    const half = Math.max(0.3, sim.nx / 150);
+    const col = [0, 0, 0], u0 = sim.u0;
+    for (let w = 0; w < rbN; w++) {
+      const b = w * RIB_LEN * 3;
+      let vo = w * RIB_LEN * 2 * 3;
+      for (let i = 0; i < RIB_LEN; i++) {
+        const o = b + i * 3;
+        const x = rbPts[o], y = rbPts[o + 1], z = rbPts[o + 2];
+        const pa = b + Math.max(0, i - 1) * 3, pb = b + Math.min(RIB_LEN - 1, i + 1) * 3;
+        let tx = rbPts[pa] - rbPts[pb],
+          ty = rbPts[pa + 1] - rbPts[pb + 1],
+          tz = rbPts[pa + 2] - rbPts[pb + 2];
+        let tl = Math.hypot(tx, ty, tz);
+        if (tl < 1e-6) { tx = 1; ty = 0; tz = 0; tl = 1; }
+        tx /= tl; ty /= tl; tz /= tl;
+        // side = tangent x view, so the ribbon always faces the camera
+        const vx = cx - x, vy = cy - y, vz = cz - z;
+        let sx = ty * vz - tz * vy, sy = tz * vx - tx * vz, sz2 = tx * vy - ty * vx;
+        const sl = Math.hypot(sx, sy, sz2) || 1;
+        sx /= sl; sy /= sl; sz2 /= sl;
+        // taper: emerges from the nozzle, dissolves at the tail
+        const t = i / (RIB_LEN - 1);
+        const grow = Math.min(1, i / 4);
+        const fade = 1 - t * t;
+        const hw = half * grow * (0.35 + 0.65 * fade);
+        rbPos[vo] = x + sx * hw; rbPos[vo + 1] = y + sy * hw; rbPos[vo + 2] = z + sz2 * hw;
+        rbPos[vo + 3] = x - sx * hw; rbPos[vo + 4] = y - sy * hw; rbPos[vo + 5] = z - sz2 * hw;
+        cmap(rbSpd[w * RIB_LEN + i] / u0 * K_SPEED, col);
+        // mostly white like real smoke, tinted a little by speed
+        const g = 0.75 * fade * grow;
+        const r0 = (0.55 + 0.45 * col[0]) * g,
+          g0 = (0.55 + 0.45 * col[1]) * g,
+          b0 = (0.55 + 0.45 * col[2]) * g;
+        rbCol[vo] = r0; rbCol[vo + 1] = g0; rbCol[vo + 2] = b0;
+        rbCol[vo + 3] = r0; rbCol[vo + 4] = g0; rbCol[vo + 5] = b0;
+        vo += 6;
+      }
+    }
+    rbGeo.attributes.position.needsUpdate = true;
+    rbGeo.attributes.color.needsUpdate = true;
   }
 
   // ---- slice texture ---------------------------------------------------
@@ -1134,6 +1277,7 @@
     }
 
     if (S.smoke) updateParticles(Math.min(2.0, dt * 60));
+    if (S.ribbons) updateRibbons(Math.min(2.0, dt * 60));
     if (S.slice) updateSlice();
     if (S.streamlines && (sim.steps % 4 === 0 || !S.running)) updateStreamlines();
 
@@ -1409,6 +1553,10 @@
       el.onclick = () => { const v = !el.classList.contains('on'); el.classList.toggle('on', v); fn(v); };
     };
     toggle('tSmoke', v => { S.smoke = v; points.visible = v; }, S.smoke);
+    toggle('tRibbons', v => {
+      S.ribbons = v; ribbons.visible = v;
+      if (v) seedRibbons();
+    }, S.ribbons);
     toggle('tSlice', v => { S.slice = v; sliceMesh.visible = v; }, S.slice);
     toggle('tLines', v => { S.streamlines = v; lineMesh.visible = v; }, S.streamlines);
     toggle('tBody', v => { S.showBody = v; bodyGroup.visible = v; }, S.showBody);
@@ -1457,6 +1605,7 @@
     $('reset').onclick = () => {
       sim.reset(); resetAverages();
       for (let i = 0; i < S.nParticles; i++) respawn(i, true);
+      seedRibbons();
     };
     $('exportRun').onclick = exportRun;
     $('help').onclick = () => $('helpBox').classList.toggle('hide');
@@ -1486,6 +1635,8 @@
       get body() { return body; },
       get avg() { return { settle, fCount, force: forceEMA.slice() }; },
       get stats() { return runStats(); },
+      get ribbons() { return ribbons; },
+      stepRibbons: updateRibbons,
       buildRunCSV, exportRun
     };
   }

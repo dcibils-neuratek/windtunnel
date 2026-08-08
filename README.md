@@ -24,6 +24,26 @@ python serve.py
 
 then visit <http://localhost:8777>.
 
+## Three ways to see the flow
+
+* **Smoke** — a cloud of tracer particles, coloured by speed. Good for seeing
+  where air is fast, slow or trapped.
+* **Ribbons** — smoke-wand **streaklines**, the thick continuous bands you see
+  in wind-tunnel footage.
+* **Streamlines** — thin curves traced through the *instantaneous* field.
+
+Ribbons and streamlines are not the same thing, and the difference matters. A
+streamline is tangent to the velocity field frozen at one instant. A streakline
+is the trail of everything ever released from one fixed nozzle — which is
+exactly what a real smoke wand emits. In steady flow the two coincide; in an
+unsteady wake they do not, and it is the *streakline* that visibly rolls up
+into vortices. That roll-up is what makes tunnel footage readable.
+
+Each wand keeps a polyline: every point is advected each frame, then a fresh
+point is pushed in at the nozzle. They are drawn as camera-facing quads, since
+WebGL will not give lines real thickness, tapering from a point at the nozzle
+and dissolving at the tail. 35 wands × 88 points costs about 1.2 ms a frame.
+
 ## Reading the slice
 
 Three different fields, two different colour maps — there is a legend under the
