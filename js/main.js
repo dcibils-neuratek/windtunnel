@@ -1764,7 +1764,18 @@
     $('capBtn').onclick = () => setCapture(!cap.on);
     $('exportRun').onclick = exportRun;
     updateCaptureUI();
-    $('help').onclick = () => $('helpBox').classList.toggle('hide');
+    $('help').onclick = () => {
+      const box = $('helpBox');
+      box.classList.toggle('hide');
+      if (!box.classList.contains('hide')) box.scrollTop = 0;
+    };
+    // contents jump-links, scrolled inside the panel rather than the page
+    $('helpBox').querySelectorAll('.toc button').forEach(b => {
+      b.onclick = () => {
+        const t = document.getElementById(b.dataset.go);
+        if (t) $('helpBox').scrollTo({ top: t.offsetTop - 54, behavior: 'smooth' });
+      };
+    });
     $('closeHelp').onclick = () => $('helpBox').classList.add('hide');
 
     window.addEventListener('keydown', e => {

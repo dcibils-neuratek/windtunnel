@@ -163,7 +163,7 @@
   <div class="s dim"><span>Perf</span><b id="perf">–</b></div>
   <button id="capBtn" class="link">● Start capture</button>
   <button id="exportRun" class="link">⤓ Export live window</button>
-  <button id="help" class="link">What am I looking at? ›</button>
+  <button id="help" class="link">❔ Help &amp; guide</button>
 </aside>
 
 <!-- attribution for an uploaded model — sits on the canvas, like a photo credit -->
@@ -176,9 +176,98 @@
 
 <!-- ---------------- help ---------------- -->
 <div id="helpBox" class="hide">
-  <div class="wtitle"><span class="wmin"></span><span class="wname">About this simulation</span></div>
+  <div class="wtitle"><span class="wmin"></span><span class="wname">Wind Tunnel — guide</span></div>
   <button id="closeHelp">×</button>
-  <h2>What this actually computes</h2>
+
+  <nav class="toc">
+    <button data-go="h-what">What this is</button>
+    <button data-go="h-first">Your first test</button>
+    <button data-go="h-controls">The controls</button>
+    <button data-go="h-see">Reading what you see</button>
+    <button data-go="h-measure">Measuring properly</button>
+    <button data-go="h-physics">How it works</button>
+    <button data-go="h-limits">Limitations</button>
+  </nav>
+
+  <h2 id="h-what">What this is</h2>
+  <p>A wind tunnel that runs in your browser. The air is not an animation — it is solved, every frame, by a
+  real <b>lattice Boltzmann Navier–Stokes solver</b> on a 3D grid of roughly 186,000 cells. Put a shape in
+  the test section and the wake, the separation, the vortices and the forces are all computed from that
+  flow rather than drawn.</p>
+  <p>You can use the nine built-in shapes or drop in your own <code>.obj</code>, <code>.stl</code> or
+  <code>.glb</code> model. It measures drag, lift and side force, reports them as coefficients with
+  confidence intervals, and exports a full run report as CSV.</p>
+  <p><b>What it is good for:</b> understanding <i>why</i> a shape behaves as it does, and comparing shapes
+  against each other. <b>What it is not:</b> a certification-grade CFD package — read the limitations
+  before quoting a number.</p>
+
+  <h2 id="h-first">Your first test</h2>
+  <ol>
+    <li><b>Pick a body.</b> Start with <i>Sedan</i>, already selected.</li>
+    <li><b>Watch the flow develop.</b> The smoke sweeps downstream and the wake forms behind the body.
+      The coefficients read <i>settling…</i> until it has.</li>
+    <li><b>Wait for the badge</b> under the trace to stop saying <i>averaging</i>. When it reads
+      <b>converged</b>, the number has stopped moving and the error bar is small.</li>
+    <li><b>Note the C<sub>d</sub>.</b> Then click <i>Box truck</i> and compare. That difference is the
+      thing this tool is genuinely good at.</li>
+    <li><b>Turn on the Slice</b> and set it to <i>Pressure</i>. Red on the nose is the air being stopped;
+      blue behind is the low-pressure wake pulling backwards. The gap between them <i>is</i> the drag.</li>
+    <li><b>Drag the body</b> around the test section, or set an <i>Angle of attack</i>, and watch the
+      numbers respond.</li>
+  </ol>
+
+  <h2 id="h-controls">The controls</h2>
+  <p><b>Test body</b> — the nine built-in shapes, plus <i>Load model…</i> for your own. Uploaded models get
+  orientation controls (<i>Up axis</i>, <i>Nose axis</i>, <i>Rotate 90°</i>, <i>Flip 180°</i>) in case the
+  automatic guess picks wrong, and <i>On the road</i> to rest it on the floor instead of centring it.</p>
+  <p><b>Flow</b> — <i>Wind speed</i> and <i>Body length</i> set the physical scale; they convert
+  coefficients into newtons but do not change the flow pattern, which depends only on Reynolds number.
+  The <i>Reynolds knob</i> lowers lattice viscosity: higher means a more turbulent, livelier wake.
+  <i>Rolling road + wheels</i> makes the floor sweep past and the wheels spin, as on a real road.</p>
+  <p><b>Attitude</b> — <i>Angle of attack</i> pitches the nose up, <i>Yaw</i> turns it into a crosswind.</p>
+  <p><b>Visualisation</b> — three ways to see the air (below), plus the <i>Slice</i> plane, <i>Body</i> to
+  hide the model and see the flow through it, and <i>LES</i> for the turbulence model.</p>
+  <p><b>Solver</b> — <i>Single core</i> or <i>Multi-core</i> (needs the page served, not opened off disk),
+  the grid resolution, and pause/reset. Press <i>Benchmark &amp; tune</i> once: it times your machine and
+  picks the best worker count.</p>
+  <table class="keys">
+    <tr><td>Drag the body</td><td>move it upstream/downstream and vertically</td></tr>
+    <tr><td>Shift-drag the body</td><td>move it sideways</td></tr>
+    <tr><td>Drag the wand</td><td>the pole upstream — probe the flow anywhere</td></tr>
+    <tr><td>Left-drag empty space</td><td>orbit · <b>right-drag</b> pan · <b>scroll</b> zoom</td></tr>
+    <tr><td>Space / R</td><td>pause · reset the flow</td></tr>
+  </table>
+
+  <h2 id="h-see">Reading what you see</h2>
+  <p><b>Smoke</b> is a cloud of tracer particles coloured by speed — good for spotting fast, slow and
+  trapped air at a glance. <b>Ribbons</b> are smoke-wand <i>streaklines</i>: the trail of everything ever
+  released from one nozzle, which is exactly what a real smoke wand emits, and the thing that visibly rolls
+  up into vortices. Set the count to a single wand and drag it around to probe one spot at a time, the way
+  a technician does. <b>Streamlines</b> are thin curves tangent to the velocity field at one instant.</p>
+  <p>The <b>Slice</b> plane has a colour key beneath it that changes with the field:</p>
+  <ul>
+    <li><b>Speed</b> — navy is stopped air, yellow-green is the free stream (marked with a tick), red is
+      about 1.6× wind speed. Blue here means <i>slow</i>, not low pressure.</li>
+    <li><b>Pressure</b> — blue is suction, red is compression, black is ambient.</li>
+    <li><b>Vorticity</b> — blue and red are opposite <i>directions</i> of spin.</li>
+  </ul>
+  <p>Speed and pressure look like mirror images wherever the flow stays attached — that is just Bernoulli.
+  Where they stop mirroring is the wake: air there is both slow <i>and</i> low pressure, because separated
+  flow dissipates energy rather than trading it. That failure is precisely what pressure drag is.</p>
+
+  <h2 id="h-measure">Measuring properly</h2>
+  <p>A number is only worth quoting once it has stopped moving. The badge under the trace tells you:
+  <b>settling</b> (the wake is still forming, nothing is being averaged yet), <b>averaging</b> (collecting),
+  <b>drifting</b> (still trending — wait), <b>noisy</b> (stable but the error bar is wide) and
+  <b>converged</b> (mean stable, 95% interval under 3%).</p>
+  <p>Error bars come from the blocking method rather than σ/√N, because consecutive timesteps in a shedding
+  wake are heavily correlated and the naive formula would flatter the result badly.</p>
+  <p>To record a run: press <b>● Start capture</b>, let it gather, press <b>■ Stop</b>, then
+  <b>⤓ Export</b>. The CSV holds every test condition, the results with confidence intervals in both
+  coefficients and newtons, and the raw time series. Capture stops by itself if you change the body, angle
+  or wind speed mid-run, since a window spanning a change of conditions would be meaningless.</p>
+
+  <h2 id="h-physics">How it works</h2>
   <p>The air is solved with the <b>lattice Boltzmann method</b> on a 3D D3Q19 lattice. Each cell carries 19
   particle-distribution functions that stream to their neighbours and relax toward the Maxwell–Boltzmann
   equilibrium every step:</p>
@@ -198,7 +287,7 @@
     <li><b>Boundaries</b> — velocity inlet, zero-gradient outlet, free-stream far field, and an optional
       no-slip road for the ground-vehicle cases.</li>
   </ul>
-  <h2>Honest limitations</h2>
+  <h2 id="h-limits">Honest limitations</h2>
   <p>A real car at 100 km/h sits at Re ≈ 10<sup>7</sup>. On a 96×44×44 grid in a browser we resolve
   Re ≈ 10<sup>3</sup>–10<sup>4</sup> (both numbers are shown in the panel). The physics — separation,
   recirculation, vortex shedding, wake momentum deficit, pressure recovery — is genuinely right, and the
