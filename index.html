@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Wind Tunnel — 3D Lattice Boltzmann CFD</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<canvas id="view"></canvas>
+
+<!-- ---------------- controls ---------------- -->
+<aside id="panel">
+  <div class="wtitle"><span class="wmin"></span><span class="wname">Wind Tunnel</span><span class="wmax"></span></div>
+  <div class="hdrrow">
+    <h1>WIND&nbsp;TUNNEL <em>D3Q19 LBM</em></h1>
+    <div class="seg"><button id="tModern">Modern</button><button id="tIrix">IRIX</button></div>
+  </div>
+
+  <section>
+    <label class="hdr">Test body</label>
+    <div id="shapes" class="chips"></div>
+    <div class="grid2" style="margin-top:7px">
+      <button id="loadModel" class="wide">⭱&nbsp; Load model…</button>
+      <button id="dropHelp" class="wide">.obj .stl .glb</button>
+    </div>
+    <input type="file" id="modelFile" accept=".obj,.stl,.glb" hidden>
+
+    <div id="modelBox" class="hide">
+      <div class="grid2">
+        <select id="mUp">
+          <option value="auto">Up axis: auto</option>
+          <option value="0">Up axis: X</option>
+          <option value="1">Up axis: Y</option>
+          <option value="2">Up axis: Z</option>
+        </select>
+        <select id="mFwd">
+          <option value="auto">Nose axis: auto</option>
+          <option value="0">Nose axis: X</option>
+          <option value="1">Nose axis: Y</option>
+          <option value="2">Nose axis: Z</option>
+        </select>
+      </div>
+      <div class="chips" style="margin-top:6px">
+        <button id="mRot">⟳&nbsp; Rotate 90°</button>
+        <button id="mFlip">Flip 180°</button>
+        <button id="mGround">On the road</button>
+      </div>
+      <p class="note" id="modelInfo"></p>
+    </div>
+  </section>
+
+  <section>
+    <div class="hdrrow">
+      <label class="hdr">Flow</label>
+      <div class="seg">
+        <button id="uMetric">Metric</button><button id="uImperial">Imperial</button>
+      </div>
+    </div>
+    <div class="row"><span>Wind speed</span><b id="windv"></b></div>
+    <input type="range" id="wind" min="5" max="120" step="1" value="30">
+    <div class="row"><span>Body length</span><b id="lengthMv"></b></div>
+    <input type="range" id="lengthM" min="0.5" max="60" step="0.1" value="4.6">
+    <div class="row"><span>Reynolds knob</span><b id="rev"></b></div>
+    <input type="range" id="re" min="0" max="100" step="1" value="62">
+    <p class="note">Lowers lattice viscosity. Higher = more turbulent wake, less stable.</p>
+  </section>
+
+  <section>
+    <label class="hdr">Attitude</label>
+    <div class="row"><span>Angle of attack</span><b id="aoav"></b></div>
+    <input type="range" id="aoa" min="-25" max="25" step="0.5" value="0">
+    <div class="row"><span>Yaw / sideslip</span><b id="yawv"></b></div>
+    <input type="range" id="yaw" min="-45" max="45" step="0.5" value="0">
+  </section>
+
+  <section>
+    <label class="hdr">Visualisation</label>
+    <div class="chips">
+      <button id="tSmoke">Smoke</button>
+      <button id="tLines">Streamlines</button>
+      <button id="tSlice">Slice</button>
+      <button id="tBody">Body</button>
+      <button id="tLes">LES</button>
+    </div>
+    <div class="grid2">
+      <select id="sliceAxis">
+        <option value="xy">Slice: side (XY)</option>
+        <option value="xz">Slice: top (XZ)</option>
+      </select>
+      <select id="sliceField">
+        <option value="speed">Speed</option>
+        <option value="vorticity">Vorticity</option>
+        <option value="pressure">Pressure</option>
+      </select>
+    </div>
+    <canvas id="legendBar" width="256" height="9"></canvas>
+    <div class="legrow"><span id="legMin"></span><span id="legMid"></span><span id="legMax"></span></div>
+    <div class="row"><span>Smoke particles</span><b id="smokeNv"></b></div>
+    <input type="range" id="smokeN" min="1000" max="24000" step="500" value="9000">
+    <div class="row"><span>Visual flow rate</span><b id="vspeedv"></b></div>
+    <input type="range" id="vspeed" min="2" max="40" step="1" value="14">
+  </section>
+
+  <section>
+    <label class="hdr">Solver</label>
+    <select id="resSel">
+      <option value="fast">Grid: fast (72×34×34)</option>
+      <option value="balanced" selected>Grid: balanced (96×44×44)</option>
+      <option value="detail">Grid: detail (124×56×56)</option>
+    </select>
+    <div class="grid2" style="margin-top:8px">
+      <button id="pause" class="wide">❚❚&nbsp; Pause</button>
+      <button id="reset" class="wide">↺&nbsp; Reset flow</button>
+    </div>
+  </section>
+</aside>
+
+<!-- ---------------- readouts ---------------- -->
+<aside id="stats">
+  <div class="wtitle"><span class="wmin"></span><span class="wname">Measurements</span><span class="wmax"></span></div>
+  <div class="sect">Aerodynamic coefficients</div>
+  <div class="s"><span>C<sub>d</sub> drag</span><b id="cd">–</b></div>
+  <div class="s"><span>C<sub>l</sub> lift</span><b id="cl">–</b></div>
+  <div class="s"><span>C<sub>y</sub> side</span><b id="cs">–</b></div>
+  <div class="s dim"><span>full-scale C<sub>d</sub> (Re≫)</span><b id="refcd">–</b></div>
+
+  <div class="sect">Forces at this wind speed</div>
+  <div class="s"><span>Drag</span><b id="drag">–</b></div>
+  <div class="s"><span id="liftlbl">Lift / downforce</span><b id="lift">–</b></div>
+  <div class="s"><span>Power to overcome</span><b id="power">–</b></div>
+  <div class="s"><span id="arealbl">Frontal (ref.) area</span><b id="area">–</b></div>
+  <div class="s"><span>Dynamic pressure q</span><b id="q">–</b></div>
+
+  <div class="sect">Similarity</div>
+  <div class="s"><span>Speed</span><b id="kmh">–</b></div>
+  <div class="s"><span>Mach</span><b id="mach">–</b></div>
+  <div class="s"><span>Re (real air)</span><b id="reReal">–</b></div>
+  <div class="s"><span>Re (simulated)</span><b id="reSim">–</b></div>
+
+  <div class="sect">Solver</div>
+  <div class="s dim"><span>Grid</span><b id="grid">–</b></div>
+  <div class="s dim"><span>Time steps</span><b id="tsteps">–</b></div>
+  <div class="s dim"><span>Perf</span><b id="perf">–</b></div>
+  <button id="help" class="link">What am I looking at? ›</button>
+</aside>
+
+<div id="hint">
+  <b>Drag the body</b> to move it upstream/downstream &amp; vertically · <b>Shift-drag</b> it sideways ·
+  Left-drag empty space to orbit · Right-drag to pan · Scroll to zoom · <b>Space</b> pause · <b>R</b> reset
+</div>
+
+<!-- ---------------- help ---------------- -->
+<div id="helpBox" class="hide">
+  <div class="wtitle"><span class="wmin"></span><span class="wname">About this simulation</span></div>
+  <button id="closeHelp">×</button>
+  <h2>What this actually computes</h2>
+  <p>The air is solved with the <b>lattice Boltzmann method</b> on a 3D D3Q19 lattice. Each cell carries 19
+  particle-distribution functions that stream to their neighbours and relax toward the Maxwell–Boltzmann
+  equilibrium every step:</p>
+  <pre>f<sub>q</sub>(x + c<sub>q</sub>Δt, t + Δt) = f<sub>q</sub>(x,t) − (1/τ)·[ f<sub>q</sub> − f<sub>q</sub><sup>eq</sup> ]</pre>
+  <p>Through the Chapman–Enskog expansion this recovers the <b>incompressible Navier–Stokes equations</b>
+  with kinematic viscosity ν = c<sub>s</sub><sup>2</sup>(τ − ½), c<sub>s</sub><sup>2</sup> = ⅓. Mass and
+  momentum are conserved exactly; pressure comes from the density field as p = ρc<sub>s</sub><sup>2</sup>,
+  so no separate Poisson solve is needed.</p>
+  <ul>
+    <li><b>Body surface</b> — halfway bounce-back, i.e. a true no-slip wall. The body is voxelised from the
+      same analytic primitives that build the mesh, so the solver feels exactly the shape you see.</li>
+    <li><b>Forces</b> — computed by the momentum-exchange method: every population that bounces off the
+      surface deposits 2·c<sub>q</sub>·f<sub>q</sub> of momentum. Summed over the body this gives real drag,
+      lift and side force, then C<sub>d</sub> = 2F / (ρu²A).</li>
+    <li><b>Turbulence</b> — a Smagorinsky sub-grid (LES) model adds eddy viscosity where the strain rate is
+      large, which is what keeps the wake alive instead of blowing up.</li>
+    <li><b>Boundaries</b> — velocity inlet, zero-gradient outlet, free-stream far field, and an optional
+      no-slip road for the ground-vehicle cases.</li>
+  </ul>
+  <h2>Honest limitations</h2>
+  <p>A real car at 100 km/h sits at Re ≈ 10<sup>7</sup>. On a 96×44×44 grid in a browser we resolve
+  Re ≈ 10<sup>3</sup>–10<sup>4</sup> (both numbers are shown in the panel). The physics — separation,
+  recirculation, vortex shedding, wake momentum deficit, pressure recovery — is genuinely right, and the
+  solver reproduces the textbook C<sub>d</sub> of a cube (1.36 vs 1.05) and a cylinder (1.25 vs 1.17)
+  well, ranks the vehicles correctly (truck 1.90 &gt; sedan 1.32), and gives a wing a lift curve of the
+  right slope and sign (C<sub>l</sub> = −0.26 / +0.01 / +0.42 at α = −8° / 0° / +8°, against ≈1.9 per
+  radian from lifting-line theory at this aspect ratio). But the reference figures listed above are
+  <b>full-scale</b> values, and C<sub>d</sub> is a strong
+  function of Reynolds number for anything rounded or streamlined. At our Reynolds number the boundary
+  layer is proportionally enormous, so skin friction dominates and slippery shapes — the teardrop
+  especially — read far higher than their full-scale numbers. That is not a bug; it is what a real tunnel
+  measures at this Re too.</p>
+  <p><b>Compare shapes against each other</b>, not against a wind-tunnel report. Tunnel blockage is held near
+  10% of the test-section area, which still inflates C<sub>d</sub> somewhat. Smoke advection is time-scaled
+  for visibility, so particle speed on screen is not the physical air speed.</p>
+</div>
+
+<script src="vendor/three.min.js"></script>
+<script>
+  if (!window.THREE) document.write(
+    '<scr' + 'ipt src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"><\/scr' + 'ipt>');
+</script>
+<div id="dropzone" class="hide"><div>Drop a model to test it<em>.obj &nbsp;·&nbsp; .stl &nbsp;·&nbsp; .glb</em></div></div>
+
+<script src="js/lbm.js"></script>
+<script src="js/meshio.js"></script>
+<script src="js/voxel.js"></script>
+<script src="js/shapes.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>

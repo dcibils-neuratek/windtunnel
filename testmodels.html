@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Mesh pipeline test</title>
+<style>
+  body{background:#0b0f16;color:#dbe6f2;font:13px ui-monospace,Consolas,monospace;padding:24px}
+  h1{font-size:14px;letter-spacing:.14em;text-transform:uppercase;color:#4fd0ff}
+  table{border-collapse:collapse;margin-top:14px;font-size:12.5px}
+  th,td{padding:5px 12px;text-align:right;border-bottom:1px solid rgba(120,170,220,.15)}
+  th{color:#7d8ea4;font-weight:500}
+  td:first-child,th:first-child{text-align:left}
+  .ok{color:#7ee787}.bad{color:#ff7b72}
+  p{color:#7d8ea4;max-width:820px;line-height:1.6}
+  button{background:#16324a;color:#dbe6f2;border:1px solid #2b4a66;padding:6px 12px;cursor:pointer;margin-right:8px}
+</style>
+</head>
+<body>
+<h1>Mesh upload pipeline — self test</h1>
+<p>Generates meshes whose exact volume and cross-section are known, runs them through
+the real parse → orient → voxelise path, and compares the voxel result against the
+analytic truth. Also round-trips the same geometry through all three file formats to
+prove the parsers agree.</p>
+<button onclick="runAll()">Run tests</button>
+<button onclick="downloadSamples()">Download sample .obj / .stl / .glb</button>
+<table id="t"><tr><th>test</th><th>got</th><th>expected</th><th>result</th></tr></table>
+
+<script>
+// always fetch fresh — this page exists to test whatever is on disk right now
+['js/lbm.js', 'js/meshio.js', 'js/voxel.js', 'js/shapes.js'].forEach(s =>
+  document.write('<script src="' + s + '?v=' + Date.now() + '"><\/script>'));
+</script>
+<script>
+const T = document.getElementById('t');
+function row(name, got, want, pass){
+  const tr=document.createElement('tr');
+  tr.innerHTML = `<td>${name}</td><td>${got}</td><td>${want}</td>`+
+                 `<td class="${pass?'ok':'bad'}">${pass?'PASS':'FAIL'}</td>`;
+  T.appendChild(tr);
+}
+
+// ---------- generators (triangle soups) ----------
+function boxMesh(sx,sy,sz){
+  const h=[sx/2,sy/2,sz/2], v=[], q=[
+    [[-1,-1,-1],[1,-1,-1],[1,1,-1],[-1,1,-1]], [[-1,-1,1],[-1,1,1],[1,1,1],[1,-1,1]],
+    [[-1,-1,-1],[-1,1,-1],[-1,1,1],[-1,-1,1]], [[1,-1,-1],[1,-1,1],[1,1,1],[1,1,-1]],
+    [[-1,-1,-1],[-1,-1,1],[1,-1,1],[1,-1,-1]], [[-1,1,-1],[1,1,-1],[1,1,1],[-1,1,1]]];
+  for(const f of q){
+    const p=f.map(c=>[c[0]*h[0],c[1]*h[1],c[2]*h[2]]);
+    v.push(...p[0],...p[1],...p[2], ...p[0],...p[2],...p[3]);
+  }
+  return new Float32Array(v);
+}
+function sphereMesh(r,seg){
+  const v=[];
+  const P=(u,t)=>[r*Math.sin(t)*Math.cos(u), r*Math.cos(t), r*Math.sin(t)*Math.sin(u)];
+  for(let i=0;i<seg;i++) for(let j=0;j<seg;j++){
+    const u0=i/seg*2*Math.PI, u1=(i+1)/seg*2*Math.PI;
+    const t0=j/seg*Math.PI,   t1=(j+1)/seg*Math.PI;
+    const a=P(u0,t0),b=P(u1,t0),c=P(u1,t1),d=P(u0,t1);
+    v.push(...a,...b,...c, ...a,...c,...d);
+  }
+  return new Float32Array(v);
+}
+
+// ---------- writers ----------
+function toOBJ(P){
+  let s='# test\n';
+  for(let i=0;i<P.length;i+=3) s+=`v ${P[i]} ${P[i+1]} ${P[i+2]}\n`;
+  for(let t=0;t<P.length/9;t++) s+=`f ${t*3+1} ${t*3+2} ${t*3+3}\n`;
+  return new TextEncoder().encode(s).buffer;
+}
+function toSTL(P){
+  const n=P.length/9, buf=new ArrayBuffer(84+n*50), dv=new DataView(buf);
+  dv.setUint32(80,n,true);
+  let o=84;
+  for(let t=0;t<n;t++){
+    o+=12;
+    for(let k=0;k<9;k++){ dv.setFloat32(o,P[t*9+k],true); o+=4; }
+    o+=2;
+  }
+  return buf;
+}
+function toGLB(P){
+  const bin=new Uint8Array(P.buffer.slice(0));
+  const pad=(4-(bin.length&3))&3;
+  const json={asset:{version:'2.0'},scene:0,scenes:[{nodes:[0]}],
+    nodes:[{mesh:0}],meshes:[{primitives:[{attributes:{POSITION:0},mode:4}]}],
+    accessors:[{bufferView:0,componentType:5126,count:P.length/3,type:'VEC3'}],
+    bufferViews:[{buffer:0,byteOffset:0,byteLength:bin.length}],
+    buffers:[{byteLength:bin.length}]};
+  let js=new TextEncoder().encode(JSON.stringify(json));
+  const jpad=(4-(js.length&3))&3;
+  const jlen=js.length+jpad, blen=bin.length+pad;
+  const total=12+8+jlen+8+blen;
+  const buf=new ArrayBuffer(total), dv=new DataView(buf), u8=new Uint8Array(buf);
+  dv.setUint32(0,0x46546C67,true); dv.setUint32(4,2,true); dv.setUint32(8,total,true);
+  dv.setUint32(12,jlen,true); dv.setUint32(16,0x4E4F534A,true);
+  u8.set(js,20); for(let i=0;i<jpad;i++) u8[20+js.length+i]=0x20;
+  const bo=20+jlen;
+  dv.setUint32(bo,blen,true); dv.setUint32(bo+4,0x004E4942,true);
+  u8.set(bin,bo+8);
+  return buf;
+}
+
+function dl(name,buf){
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([buf]));
+  a.download=name; a.click();
+}
+function downloadSamples(){
+  const car=boxMesh(4.2,1.4,1.8);
+  dl('testbox.obj',toOBJ(car)); dl('testbox.stl',toSTL(car)); dl('testsphere.glb',toGLB(sphereMesh(1,32)));
+}
+
+// ---------- tests ----------
+function runAll(){
+  T.innerHTML='<tr><th>test</th><th>got</th><th>expected</th><th>result</th></tr>';
+
+  // 1) parser agreement across the three formats
+  const src = boxMesh(4,2,3);
+  const ntri = src.length/9;
+  for (const [fmt,buf] of [['obj',toOBJ(src)],['stl',toSTL(src)],['glb',toGLB(src)]]){
+    let P=null,err='';
+    try{ P=MeshIO.parse('x.'+fmt, buf); }catch(e){ err=e.message; }
+    const okTri = P && P.length/9===ntri;
+    let maxd=0;
+    if(okTri) for(let i=0;i<P.length;i++) maxd=Math.max(maxd,Math.abs(P[i]-src[i]));
+    row(`parse .${fmt}`, okTri?`${P.length/9} tris, max Δ ${maxd.toExponential(1)}`:('error: '+err),
+        `${ntri} tris, Δ 0`, okTri && maxd<1e-5);
+  }
+
+  // 2) voxel volume of a box.
+  // Voxelisation is deliberately CONSERVATIVE — every cell the surface passes
+  // through is solid, so sub-cell features can never leak flow. So the answer
+  // must sit between the exact volume and the volume grown by one cell layer.
+  {
+    const P=boxMesh(4,2,3);            // 4 long, 2 tall, 3 wide
+    Shapes.orient(P,0,1,false,false);  // already body-aligned; normalises length to 1
+    const v=Voxel.build(P,96);
+    const a=1/v.cell, b=(2/4)/v.cell, c=(3/4)/v.cell;
+    const lo=a*b*c, hi=(a+2)*(b+2)*(c+2);
+    const got=v.stats.solid;
+    row('box voxel volume', got.toLocaleString()+' cells',
+        `${Math.round(lo).toLocaleString()} … ${Math.round(hi).toLocaleString()}`,
+        got>=lo*0.999 && got<=hi);
+    row('box watertight metric', v.stats.openness.toFixed(4), '< 0.02', v.stats.openness<0.02);
+  }
+
+  // 3) voxel volume of a sphere vs 4/3 pi r^3, same conservative bound
+  {
+    const P=sphereMesh(1,48);
+    Shapes.orient(P,0,1,false,false);  // diameter -> 1.0
+    const v=Voxel.build(P,96);
+    const r=0.5/v.cell;
+    const lo=(4/3)*Math.PI*r**3, hi=(4/3)*Math.PI*(r+1)**3;
+    const got=v.stats.solid;
+    row('sphere voxel volume', got.toLocaleString()+' cells',
+        `${Math.round(lo).toLocaleString()} … ${Math.round(hi).toLocaleString()}`,
+        got>=lo*0.999 && got<=hi);
+    row('sphere watertight metric', v.stats.openness.toFixed(4), '< 0.02', v.stats.openness<0.02);
+  }
+
+  // 4) orientation: a Z-up, Y-long model must come out nose-at-minus-X, up-at-plus-Y
+  {
+    const P=boxMesh(1.0,4.0,2.0);      // long axis = Y, up = Z (smallest is X=1)
+    const g=Shapes.guessAxes([1,4,2]);
+    Shapes.orient(P,g.forward,g.up,false,false);
+    const b=Voxel.bounds(P);
+    const sx=b[3]-b[0], sy=b[4]-b[1], sz=b[5]-b[2];
+    row('auto-orient (guess)', `fwd=${'XYZ'[g.forward]} up=${'XYZ'[g.up]}`, 'fwd=Y up=X',
+        g.forward===1 && g.up===0);
+    row('auto-orient extents', `${sx.toFixed(2)} × ${sy.toFixed(2)} × ${sz.toFixed(2)}`,
+        '1.00 × 0.25 × 0.50', Math.abs(sx-1)<1e-4 && Math.abs(sy-0.25)<1e-4 && Math.abs(sz-0.5)<1e-4);
+  }
+
+  // 5) ground placement: model must rest on y = 0
+  {
+    const P=boxMesh(4,2,3);
+    Shapes.orient(P,0,1,false,true);
+    const b=Voxel.bounds(P);
+    row('ground placement (y min)', b[1].toFixed(4), '0.0000', Math.abs(b[1])<1e-6);
+  }
+
+  // 6) end-to-end: mesh cube through the solver vs the analytic cube body
+  {
+    const NX=80,NY=36,NZ=36;
+    function run(shape){
+      const L=new LBM(NX,NY,NZ);
+      L.tau=0.5+Math.pow(10,-1.1-2.3*0.62);
+      const b=new Shapes.Body(shape); b.fit(NX,NY,NZ);
+      b.pos=[NX*0.36,NY/2,NZ/2];
+      L.voxelize(b.makeTest(), b.box(), false);
+      let Fx=0,n=0;
+      for(let t=0;t<440;t++){L.step(); if(t>=260){Fx+=L.force[0];n++;}}
+      return {cd:Fx/n/(0.5*L.u0*L.u0*L.frontalArea), area:L.frontalArea, cells:L.solidCells};
+    }
+    const P=boxMesh(0.44,0.44,0.44);
+    Shapes.addModel('meshcube','meshcube',P,{forward:0,up:1,flip:false,ground:false,res:96});
+    Shapes.BODIES.meshcube.fill=1.0;              // same blockage budget as the analytic cube
+    const a=run('cube'), m=run('meshcube');
+    row('mesh cube frontal area', m.area+' cells', a.area+' cells', Math.abs(m.area-a.area)/a.area<0.06);
+    row('mesh cube Cd', m.cd.toFixed(3), a.cd.toFixed(3)+' ±8%',
+        Math.abs(m.cd-a.cd)/a.cd<0.08);
+    delete Shapes.BODIES.meshcube;
+  }
+}
+</script>
+</body>
+</html>

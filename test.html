@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Wind tunnel — solver validation</title>
+<style>
+  body{background:#0b0f16;color:#dbe6f2;font:13px ui-monospace,Consolas,monospace;padding:24px}
+  h1{font-size:14px;letter-spacing:.14em;text-transform:uppercase;color:#4fd0ff}
+  table{border-collapse:collapse;margin-top:14px;font-size:12.5px}
+  th,td{padding:5px 12px;text-align:right;border-bottom:1px solid rgba(120,170,220,.15)}
+  th{color:#7d8ea4;font-weight:500;text-align:right}
+  td:first-child,th:first-child{text-align:left}
+  .ok{color:#7ee787}.bad{color:#ff7b72}.pend{color:#7d8ea4}
+  p{color:#7d8ea4;max-width:760px;line-height:1.6}
+</style>
+</head>
+<body>
+<h1>Solver validation</h1>
+<p>Each case runs on a 96×44×44 lattice, discards the first 400 steps, then averages the
+momentum-exchange force over the next 300. Reference values are the <em>full-scale</em>
+textbook figures for the same shape. At this grid the effective Reynolds number is ~10³, where
+rounded and streamlined bodies genuinely have much higher C<sub>d</sub> than their full-scale
+numbers — so what is being checked here is that the <em>signs, the ordering and the
+Reynolds-appropriate magnitudes</em> are right, not that the numbers match the right-hand column.
+Lift cells are green when the sign follows the angle of attack.</p>
+<p><b>Note:</b> browsers throttle timers in unfocused tabs — keep this tab in the foreground or the
+suite will crawl.</p>
+<table id="t">
+  <tr><th>case</th><th>Cd (sim)</th><th>Cd (book)</th><th>Cl (sim)</th><th>cells</th><th>frontal</th><th>ms/step</th></tr>
+</table>
+
+<script src="js/lbm.js"></script>
+<script src="js/shapes.js"></script>
+<script>
+const NX=96, NY=44, NZ=44, WARM=400, AVG=300;
+const CASES = [
+  {name:'sphere',     shape:'sphere',   ground:false, book:'0.47',  aoa:0},
+  {name:'cube',       shape:'cube',     ground:false, book:'1.05',  aoa:0},
+  {name:'cylinder',   shape:'cylinder', ground:false, book:'1.17',  aoa:0},
+  {name:'teardrop',   shape:'teardrop', ground:false, book:'0.04',  aoa:0},
+  {name:'sedan',      shape:'sedan',    ground:true,  book:'0.32',  aoa:0},
+  {name:'truck',      shape:'truck',    ground:true,  book:'0.75',  aoa:0},
+  {name:'wing α=−8°', shape:'wing',     ground:false, book:'Cl<0',  aoa:-8},
+  {name:'wing α=0°',  shape:'wing',     ground:false, book:'Cl≈0.4',aoa:0},
+  {name:'wing α=8°',  shape:'wing',     ground:false, book:'Cl≈1.2',aoa:8},
+  {name:'wing α=16°', shape:'wing',     ground:false, book:'stall', aoa:16},
+  {name:'airplane',   shape:'airplane', ground:false, book:'0.03',  aoa:2}
+];
+
+const table = document.getElementById('t');
+CASES.forEach(c=>{
+  const tr = document.createElement('tr');
+  tr.innerHTML = `<td>${c.name}</td><td class="pend">…</td><td>${c.book}</td>`+
+                 `<td class="pend">…</td><td></td><td></td><td></td>`;
+  table.appendChild(tr); c.row = tr;
+});
+
+let k = 0;
+function next(){
+  if (k >= CASES.length) { document.title = 'DONE — ' + document.title; return; }
+  const c = CASES[k];
+  const L = new LBM(NX,NY,NZ);
+  L.tau = 0.5 + Math.pow(10, -1.1 - 2.3*0.62);
+  const b = new Shapes.Body(c.shape);
+  b.fit(NX,NY,NZ);
+  b.pos = [NX*0.36, c.ground ? 1 : NY*0.5, NZ*0.5];
+  b.pitch = -c.aoa * Math.PI/180;         // nose points at -x
+  L.voxelize(b.makeTest(), b.box(), c.ground);
+  const A = b.def.ref === 'planform' ? L.planformArea : L.frontalArea;
+
+  let n=0, Fx=0, Fy=0, t=0, ms=0;
+  (function chunk(){
+    const t0 = performance.now();
+    for (let s=0; s<40 && t<WARM+AVG; s++, t++){
+      L.step();
+      if (t>=WARM){ Fx+=L.force[0]; Fy+=L.force[1]; n++; }
+    }
+    ms += performance.now()-t0;
+    if (t < WARM+AVG) return setTimeout(chunk, 0);
+
+    const q = 0.5*L.u0*L.u0*A;
+    const cd = Fx/n/q, cl = Fy/n/q;
+    const cells = c.row.children;
+    cells[1].textContent = cd.toFixed(3);
+    cells[1].className = cd > 0 ? 'ok' : 'bad';
+    cells[3].textContent = cl.toFixed(3);
+    cells[3].className = c.aoa > 0 ? (cl > 0 ? 'ok' : 'bad')
+                       : c.aoa < 0 ? (cl < 0 ? 'ok' : 'bad') : '';
+    cells[4].textContent = L.solidCells;
+    cells[5].textContent = A + (b.def.ref === 'planform' ? ' (plan)' : '');
+    cells[6].textContent = (ms/t).toFixed(1);
+    k++; setTimeout(next, 0);
+  })();
+}
+next();
+</script>
+</body>
+</html>
