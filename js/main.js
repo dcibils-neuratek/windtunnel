@@ -14,6 +14,8 @@
 
   const S = {                 // UI state
     res: 'balanced',
+    compute: 'single',        // 'single' | 'multi' (worker pool)
+    workers: 0,               // 0 = auto; the Benchmark button tunes it
     shape: 'sedan',
     windMs: 30,
     lengthM: 4.6,
@@ -49,6 +51,7 @@
   let points, pPos, pCol, pAge, pGeo;
   let lineGeo, lineMesh, linePos;
   let needsVoxelize = true, dragging = null;
+  let pool = null, poolReady = null, batchInFlight = false;
   const tmpV = [0, 0, 0];
   const forceEMA = [0, 0, 0];
   let fCount = 0, settle = 0;
@@ -87,6 +90,14 @@
    * the trace is an unreadable band and the error bar measures the artefact
    * rather than the flow.
    */
+  /** Fold one completed timestep's force into the running statistics. */
+  function accumulate() {
+    if (settle > 0) { settle--; return; }
+    const a = 1 / Math.min(++fCount, 500);
+    for (let k = 0; k < 3; k++) forceEMA[k] += (sim.force[k] - forceEMA[k]) * a;
+    pushSample();
+  }
+
   function pushSample() {
     if (!havePrev) { prevF.set(sim.force); havePrev = true; return; }
     const q = 0.5 * sim.u0 * sim.u0 * refCells();
@@ -288,7 +299,11 @@
   // ---- build everything for the current resolution ---------------------
   function buildWorld() {
     const [nx, ny, nz] = RES[S.res];
-    sim = new LBM(nx, ny, nz);
+    if (pool) { pool.dispose(); pool = null; }
+    // allocate shared whenever the platform allows it, so the multi-core
+    // toggle never needs a rebuild
+    sim = new LBM(nx, ny, nz, { shared: !LBMPool.unavailableReason() });
+    poolReady = null;
     applySolverParams();
 
     if (tunnelBox) scene.remove(tunnelBox);
@@ -486,12 +501,135 @@
     el.classList.toggle('warn', bad);
   }
 
+  /**
+   * Switch between the single-threaded solver and the worker pool.
+   *
+   * The lattice already lives in SharedArrayBuffers, so switching costs
+   * nothing but spawning or terminating workers — the flow state carries
+   * straight over.
+   */
+  function setCompute(mode) {
+    const why = LBMPool.unavailableReason();
+    if (mode === 'multi' && why) mode = 'single';
+    S.compute = mode;
+    const $ = id => document.getElementById(id);
+    $('cSingle').classList.toggle('on', mode === 'single');
+    $('cMulti').classList.toggle('on', mode === 'multi');
+    $('cMulti').classList.toggle('off', !!why);
+
+    if (mode === 'single') {
+      if (pool) { pool.dispose(); pool = null; }
+      poolReady = null;
+      batchInFlight = false;
+      computeNote(why ? 'Single core. Multi-core ' + why + '.' : 'Single core.');
+      return;
+    }
+    if (pool || poolReady) return;
+    const n = S.workers || LBMPool.suggestedWorkers();
+    computeNote('Starting ' + n + ' worker threads…');
+    poolReady = new LBMPool.Pool(sim, n).start().then(p => {
+      if (S.compute !== 'multi') { p.dispose(); return; }
+      pool = p; pool.syncParams();
+      poolReady = null;
+      computeNote(n + ' worker threads on ' +
+        (navigator.hardwareConcurrency || '?') + ' logical cores, one z-slab each.');
+    }).catch(err => {
+      poolReady = null;
+      console.error(err);
+      setCompute('single');
+      computeNote('Worker pool failed to start — staying single core.');
+    });
+  }
+  function computeNote(t) {
+    const el = document.getElementById('computeNote');
+    if (el) el.textContent = t;
+  }
+
+  /**
+   * Time the solver on this machine and pick the best worker count.
+   *
+   * The optimum is very machine-specific — it depends on physical vs logical
+   * cores and on memory bandwidth, and this kernel is bandwidth bound — so
+   * measuring beats guessing. Runs on a scratch lattice so the live flow is
+   * untouched.
+   */
+  async function benchmark() {
+    const btn = document.getElementById('cBench');
+    if (btn.disabled) return;
+    btn.disabled = true;
+    const wasRunning = S.running;
+    S.running = false;
+    try {
+      const [nx, ny, nz] = RES[S.res];
+      const build = (shared) => {
+        const s = new LBM(nx, ny, nz, { shared });
+        s.tau = sim.tau; s.les = sim.les; s.u0 = sim.u0;
+        const rolling = S.rollingRoad && S.ground;
+        s.voxelize(body.makeTest(), body.box(), S.ground,
+          rolling ? body.makeWheelVel(s.u0) : null, rolling ? s.u0 : 0);
+        return s;
+      };
+      computeNote('Benchmarking 1 core…');
+      await new Promise(r => setTimeout(r, 30));
+      const A = build(false);
+      for (let i = 0; i < 12; i++) A.step();                  // warm the JIT
+      let best1 = Infinity;
+      for (let r = 0; r < 3; r++) {
+        const t = performance.now();
+        for (let i = 0; i < 20; i++) A.step();
+        best1 = Math.min(best1, (performance.now() - t) / 20);
+      }
+      const mlups = ms => (A.n / ms / 1000).toFixed(1);
+      let line = `1 core ${best1.toFixed(1)} ms/step (${mlups(best1)} MLUPS)`;
+
+      const why = LBMPool.unavailableReason();
+      if (!why) {
+        const hc = navigator.hardwareConcurrency || 4;
+        const tries = [...new Set([2, Math.max(2, hc >> 1), Math.max(2, hc - 1)])]
+          .filter(v => v >= 2 && v <= 16).sort((a, b) => a - b);
+        let bestN = 0, bestMs = Infinity;
+        for (const nw of tries) {
+          computeNote(`Benchmarking ${nw} workers…`);
+          await new Promise(r => setTimeout(r, 30));
+          const B = build(true);
+          const p = await new LBMPool.Pool(B, nw).start();
+          p.syncParams();
+          await p.step(8);                                    // warm
+          let ms = Infinity;
+          for (let r = 0; r < 3; r++) {
+            const t = performance.now();
+            await p.step(8);
+            ms = Math.min(ms, (performance.now() - t) / 8);
+          }
+          p.dispose();
+          if (ms < bestMs) { bestMs = ms; bestN = nw; }
+        }
+        line += ` · best ${bestN} workers ${bestMs.toFixed(1)} ms/step ` +
+          `(${mlups(bestMs)} MLUPS, ${(best1 / bestMs).toFixed(2)}×)`;
+        if (bestMs < best1) {
+          S.workers = bestN;
+          if (S.compute === 'multi') { setCompute('single'); setCompute('multi'); }
+        } else {
+          line += ' — single core wins here, staying on it';
+          setCompute('single');
+        }
+      }
+      computeNote(line);
+    } catch (e) {
+      computeNote('Benchmark failed: ' + e.message);
+    } finally {
+      S.running = wasRunning;
+      btn.disabled = false;
+    }
+  }
+
   function applySolverParams() {
     // reKnob 0..1 maps tau from viscous (stable, low Re) to nearly inviscid
     const tau = 0.5 + Math.pow(10, -1.1 - 2.3 * S.reKnob);
     sim.tau = tau;
     sim.les = S.les;
     sim.u0 = 0.06;
+    if (pool) pool.syncParams();          // workers hold their own copy
   }
 
   // ---- particles -------------------------------------------------------
@@ -961,21 +1099,35 @@
       const wheelVel = rolling ? body.makeWheelVel(sim.u0) : null;
       sim.voxelize(body.makeTest(), body.box(), S.ground, wheelVel, rolling ? sim.u0 : 0);
       needsVoxelize = false;
+      if (pool) pool.syncParams();        // movingWalls may have changed
       updateRoadNote();
     }
 
-    if (S.running) {
-      const t0 = performance.now();
-      for (let s = 0; s < stepsPerFrame; s++) {
-        sim.step();
-        if (settle > 0) settle--;
-        else {
-          // running mean that turns into a 500-sample moving average
-          const a = 1 / Math.min(++fCount, 500);
-          for (let k = 0; k < 3; k++) forceEMA[k] += (sim.force[k] - forceEMA[k]) * a;
-          pushSample();
-        }
+    if (S.running && pool) {
+      // Multi-core: fire a batch and let it run while this frame renders the
+      // previous state. Rendering no longer waits on the solver at all.
+      if (!batchInFlight && !needsVoxelize) {
+        batchInFlight = true;
+        const n = Math.max(1, Math.min(8, stepsPerFrame));
+        const t0 = performance.now();
+        pool.step(n).then(series => {
+          for (const f of series) {
+            sim.force[0] = f[0]; sim.force[1] = f[1]; sim.force[2] = f[2];
+            accumulate();
+          }
+          const el = (performance.now() - t0) / n;
+          msPerStep += (el - msPerStep) * 0.15;
+          stepsPerFrame = msPerStep < 3 ? 8 : msPerStep < 6 ? 4 : msPerStep < 12 ? 2 : 1;
+          batchInFlight = false;
+        }).catch(err => {
+          batchInFlight = false;
+          console.error('worker pool failed, falling back to single core', err);
+          setCompute('single');
+        });
       }
+    } else if (S.running) {
+      const t0 = performance.now();
+      for (let s = 0; s < stepsPerFrame; s++) { sim.step(); accumulate(); }
       const el = (performance.now() - t0) / stepsPerFrame;
       msPerStep += (el - msPerStep) * 0.15;
       stepsPerFrame = msPerStep < 6 ? 3 : msPerStep < 12 ? 2 : 1;
@@ -1287,9 +1439,15 @@
     $('sliceAxis').onchange = e => { S.sliceAxis = e.target.value; buildSlice(); };
     $('sliceField').onchange = e => { S.sliceField = e.target.value; drawLegend(); };
     drawLegend();
+    $('cSingle').onclick = () => setCompute('single');
+    $('cMulti').onclick = () => setCompute('multi');
+    $('cBench').onclick = benchmark;
+    setCompute(S.compute);
+
     $('resSel').onchange = e => {
       S.res = e.target.value;
-      buildWorld();
+      buildWorld();                       // drops the pool; re-spawn on the new grid
+      setCompute(S.compute);
     };
 
     $('pause').onclick = () => {

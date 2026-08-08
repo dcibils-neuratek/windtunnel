@@ -107,7 +107,13 @@
 
   <section>
     <label class="hdr">Solver</label>
-    <select id="resSel">
+    <div class="row"><span>Compute</span><b></b></div>
+    <div class="seg" style="margin:2px 0 4px">
+      <button id="cSingle">Single core</button><button id="cMulti">Multi-core</button>
+    </div>
+    <div class="chips"><button id="cBench" class="wide">⏱ Benchmark &amp; tune</button></div>
+    <p class="note" id="computeNote"></p>
+    <select id="resSel" style="margin-top:8px">
       <option value="fast">Grid: fast (72×34×34)</option>
       <option value="balanced" selected>Grid: balanced (96×44×44)</option>
       <option value="detail">Grid: detail (124×56×56)</option>
@@ -217,6 +223,7 @@
 <div id="dropzone" class="hide"><div>Drop a model to test it<em>.obj &nbsp;·&nbsp; .stl &nbsp;·&nbsp; .glb</em></div></div>
 
 <script src="js/lbm.js"></script>
+<script src="js/pool.js"></script>
 <script src="js/meshio.js"></script>
 <script src="js/voxel.js"></script>
 <script src="js/shapes.js"></script>

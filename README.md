@@ -224,6 +224,38 @@ in cells and warns below four. Wheel rotation also needs identifiable wheel
 geometry, so it applies to the bundled vehicles; uploads get the rolling road
 only.
 
+## Single-core vs multi-core
+
+A toggle in the Solver section. Double-buffered lattice Boltzmann is
+embarrassingly parallel: every worker reads `f` and writes a **disjoint** part
+of `g`, so the domain splits into z-slabs with no locking and no halo exchange
+— one barrier per step is the entire synchronisation.
+
+The lattice lives in `SharedArrayBuffer`s, so workers operate on it in place and
+switching modes costs nothing but spawning threads; the flow state carries
+straight over. A batch of steps costs exactly two `postMessage`s per worker,
+everything between is `Atomics`.
+
+The kernel is **not duplicated**: workers call the same `stepSlab()` the
+single-threaded path calls, so the two cannot drift. Verified — across 120 steps
+on 7 workers the velocity and density fields are **bit-identical** to the
+single-threaded solver (max difference exactly 0); forces differ by 3.6e-15,
+which is float summation order.
+
+Boundaries are z-sliced across workers too, so there is no serial section for
+one thread to run alone while the others wait.
+
+**⏱ Benchmark & tune** times 1 core against several worker counts on your
+machine and keeps the best. Worth pressing once: the optimum is
+machine-specific, since `hardwareConcurrency` counts SMT siblings and this
+kernel is memory-bandwidth bound, so running a thread on every logical core can
+be *slower* than half of them.
+
+⚠ Multi-core needs `SharedArrayBuffer`, which browsers gate behind
+cross-origin isolation. `serve.py` sends the required COOP/COEP headers.
+Opening `index.html` straight off disk still works, but stays single-core —
+a `file://` URL has no headers at all, and the toggle says so.
+
 ## Measurement
 
 Coefficients are reported as a **mean with a 95% confidence interval**, plus a

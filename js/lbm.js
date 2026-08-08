@@ -41,26 +41,49 @@
   const SQ18 = 18 * Math.SQRT2;
 
   class LBM {
-    constructor(nx, ny, nz) {
+    /**
+     * @param opts.shared    back every array with a SharedArrayBuffer so
+     *                       worker threads can operate on the same lattice
+     * @param opts.buffers   attach to buffers created elsewhere (a worker
+     *                       re-creating the same lattice the main thread made)
+     */
+    constructor(nx, ny, nz, opts) {
+      opts = opts || {};
       this.nx = nx; this.ny = ny; this.nz = nz;
       this.n = nx * ny * nz;
       const n = this.n;
 
-      this.f = new Float32Array(n * Q);
-      this.g = new Float32Array(n * Q);
-      this.solid = new Uint8Array(n);
-      this.near = new Uint8Array(n);
+      const B = opts.buffers;
+      const alloc = (Type, len, key) => {
+        if (B) return new Type(B[key]);
+        if (!opts.shared) return new Type(len);
+        return new Type(new SharedArrayBuffer(len * Type.BYTES_PER_ELEMENT));
+      };
 
-      this.ux = new Float32Array(n);
-      this.uy = new Float32Array(n);
-      this.uz = new Float32Array(n);
-      this.rho = new Float32Array(n);
+      // Two population buffers selected by a parity flag rather than by
+      // swapping references. Workers each hold their own LBM object, so the
+      // "which buffer is current" answer has to live in shared memory.
+      this.bufA = alloc(Float32Array, n * Q, 'bufA');
+      this.bufB = alloc(Float32Array, n * Q, 'bufB');
+      this.ctrl = alloc(Int32Array, 8, 'ctrl');       // worker barrier only
+      // Which buffer is current. Deliberately NOT shared: every worker
+      // advances the same number of steps, so each can flip its own copy and
+      // they stay in agreement without touching an atomic.
+      this.parity = 0;
+
+      this.solid = alloc(Uint8Array, n, 'solid');
+      this.near = alloc(Uint8Array, n, 'near');
+
+      this.ux = alloc(Float32Array, n, 'ux');
+      this.uy = alloc(Float32Array, n, 'uy');
+      this.uz = alloc(Float32Array, n, 'uz');
+      this.rho = alloc(Float32Array, n, 'rho');
 
       // surface velocity of solid cells — a rolling road and spinning wheels
       // are no-slip walls that happen to be moving
-      this.uwx = new Float32Array(n);
-      this.uwy = new Float32Array(n);
-      this.uwz = new Float32Array(n);
+      this.uwx = alloc(Float32Array, n, 'uwx');
+      this.uwy = alloc(Float32Array, n, 'uwy');
+      this.uwz = alloc(Float32Array, n, 'uwz');
       this.movingWalls = false;
 
       this.off = new Int32Array(Q);   // cell offset of c_q
@@ -88,9 +111,22 @@
       this._col = new Uint8Array(ny * nz);   // frontal (x) projection
       this._plan = new Uint8Array(nx * nz);  // planform (y) projection
       this._low = new Int16Array(nx * nz);   // lowest body cell per column
+      this._sf = new Float64Array(3);        // force from the last slab
       this.rideHeight = 0;
 
-      this.reset();
+      if (!B) this.reset();                  // attached workers inherit state
+    }
+
+    /** Current-timestep populations (read) and next-timestep (write). */
+    get f() { return this.parity ? this.bufB : this.bufA; }
+    get g() { return this.parity ? this.bufA : this.bufB; }
+
+    /** Every SharedArrayBuffer, for handing to a worker. */
+    buffers() {
+      const o = {};
+      for (const k of ['bufA', 'bufB', 'ctrl', 'solid', 'near',
+        'ux', 'uy', 'uz', 'rho', 'uwx', 'uwy', 'uwz']) o[k] = this[k].buffer;
+      return o;
     }
 
     idx(x, y, z) { return x + this.nx * (y + this.ny * z); }
@@ -227,6 +263,24 @@
 
     /** Advance the flow by one lattice time step. */
     step() {
+      this.stepSlab(1, this.nz - 1);
+      this._boundaries(this.g);
+      this.parity ^= 1;                      // g becomes the new f
+      this.force[0] = this._sf[0]; this.force[1] = this._sf[1]; this.force[2] = this._sf[2];
+      this.steps++;
+    }
+
+    /**
+     * Collide + stream the z-slab [z0,z1), reading f and writing g.
+     *
+     * This is the whole hot kernel, and it is the unit of parallelism: with
+     * double buffering every worker reads the same f and writes a disjoint
+     * part of g, so slabs need no locking and no halo exchange — only a
+     * barrier before the buffers are swapped.
+     *
+     * Leaves the slab's force contribution in this._sf.
+     */
+    stepSlab(z0, z1) {
       const nx = this.nx, ny = this.ny, nz = this.nz, nn = this.n;
       const F = this.f, G = this.g;
       const solid = this.solid, near = this.near, off = this.off;
@@ -248,7 +302,7 @@
 
       let Fx = 0, Fy = 0, Fz = 0;
 
-      for (let z = 1; z < nz - 1; z++) {
+      for (let z = z0; z < z1; z++) {
         for (let y = 1; y < ny - 1; y++) {
           let i = 1 + nx * (y + ny * z);
           for (let x = 1; x < nx - 1; x++, i++) {
@@ -369,14 +423,15 @@
         }
       }
 
-      this._boundaries(G);
-      this.f = G; this.g = F;
-      this.force[0] = Fx; this.force[1] = Fy; this.force[2] = Fz;
-      this.steps++;
+      this._sf[0] = Fx; this._sf[1] = Fy; this._sf[2] = Fz;
     }
 
-    /** Velocity inlet, zero-gradient outlet, free-stream side walls. */
-    _boundaries(g) {
+    /**
+     * Velocity inlet, zero-gradient outlet, free-stream side walls.
+     * Optionally restricted to z in [z0,z1) so the pass can be split across
+     * threads; doLo/doHi claim the z=0 and z=nz-1 planes.
+     */
+    _boundaries(g, z0, z1, doLo, doHi) {
       const nx = this.nx, ny = this.ny, nz = this.nz, n = this.n, u0 = this.u0;
       const ux = this.ux, uy = this.uy, uz = this.uz, rho = this.rho, solid = this.solid;
 
@@ -385,24 +440,30 @@
         ux[i] = u0; uy[i] = 0; uz[i] = 0; rho[i] = 1;
       };
 
-      for (let z = 0; z < nz; z++) {
+      // z-sliced so worker threads can each do their own share; the two
+      // spanwise end planes belong to whoever is told to take them.
+      const a = z0 === undefined ? 0 : z0, b = z1 === undefined ? nz : z1;
+      const endLo = z0 === undefined ? true : !!doLo;
+      const endHi = z1 === undefined ? true : !!doHi;
+
+      for (let z = a; z < b; z++) {
         for (let y = 0; y < ny; y++) setEq(nx * (y + ny * z));              // inlet
-      }
-      for (let z = 0; z < nz; z++) {
         for (let x = 0; x < nx; x++) {
           setEq(x + nx * ((ny - 1) + ny * z));                              // ceiling
           const i0 = x + nx * ny * z;
           if (!solid[i0]) setEq(i0);                                        // floor
         }
       }
-      for (let y = 0; y < ny; y++) {
-        for (let x = 0; x < nx; x++) {
-          setEq(x + nx * y);                                                // z = 0
-          setEq(x + nx * (y + ny * (nz - 1)));                              // z = nz-1
+      if (endLo || endHi) {
+        for (let y = 0; y < ny; y++) {
+          for (let x = 0; x < nx; x++) {
+            if (endLo) setEq(x + nx * y);                                   // z = 0
+            if (endHi) setEq(x + nx * (y + ny * (nz - 1)));                 // z = nz-1
+          }
         }
       }
       const xo = nx - 1;                                                    // outlet
-      for (let z = 0; z < nz; z++) {
+      for (let z = a; z < b; z++) {
         for (let y = 0; y < ny; y++) {
           const i = xo + nx * (y + ny * z), j = i - 1;
           for (let q = 0; q < Q; q++) g[q * n + i] = g[q * n + j];
@@ -448,4 +509,5 @@
   LBM.Q = Q; LBM.EX = EX; LBM.EY = EY; LBM.EZ = EZ; LBM.W = W;
   LBM.FLUID = FLUID; LBM.SOLID_OBJ = SOLID_OBJ; LBM.SOLID_WALL = SOLID_WALL;
   global.LBM = LBM;
-})(window);
+  // `self` inside a worker, `window` on the page — the solver runs in both
+})(typeof window !== 'undefined' ? window : self);

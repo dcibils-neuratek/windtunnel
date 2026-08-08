@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
 """Static dev server for the wind tunnel.
 
-Identical to `python -m http.server` except it tells the browser never to
-cache anything. Browsers are aggressive about holding on to .js and .css,
-which makes editing this app maddening — you reload and get the old file.
+Two things `python -m http.server` will not do for us:
+
+1. Never cache. Browsers hold on to .js and .css aggressively, which makes
+   editing maddening — you reload and get the old file.
+
+2. Cross-origin isolation (COOP + COEP). SharedArrayBuffer is gated behind
+   it, and without SharedArrayBuffer the multi-core solver cannot run: the
+   worker threads would have no way to share the lattice. This is also why
+   multi-core is unavailable when index.html is opened straight off disk —
+   a file:// URL has no headers at all.
 
     python serve.py [port]        # default 8777
 """
@@ -16,6 +23,10 @@ class NoCacheHandler(SimpleHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store, must-revalidate")
         self.send_header("Pragma", "no-cache")
         self.send_header("Expires", "0")
+        # unlocks SharedArrayBuffer -> the multi-core solver
+        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+        self.send_header("Cross-Origin-Embedder-Policy", "require-corp")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
         super().end_headers()
 
     def log_message(self, fmt, *args):
