@@ -715,45 +715,47 @@
   function showCredit(c) {
     const box = document.getElementById('modelCredit');
     box.textContent = '';
+    box.removeAttribute('title');
     if (!c) { box.classList.add('hide'); return; }
 
-    const head = document.createElement('div');
-    head.className = 'chead';
-    head.textContent = 'Model credit';
-    box.appendChild(head);
+    // "Ameer Studio (https://…)" reads better as just the name
+    const clean = (s) => s.replace(/\s*\(https?:\/\/[^\s)]*\)\s*/g, '').trim();
 
-    const row = (label, value) => {
-      if (!value) return false;
-      const d = document.createElement('div');
-      d.className = 'crow';
-      if (label) {
-        const k = document.createElement('span');
-        k.className = 'ckey'; k.textContent = label;
-        d.appendChild(k);
+    const add = (text, url, cls) => {
+      if (!text) return false;
+      if (box.childNodes.length) {
+        const sep = document.createElement('span');
+        sep.className = 'csep'; sep.textContent = '·';
+        box.appendChild(sep);
       }
-      const url = httpUrl(value);
+      let el;
       if (url) {
-        const a = document.createElement('a');
-        a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer';
-        // "Ameer Studio (https://…)" reads better as just the name
-        a.textContent = value.replace(/\s*\(https?:\/\/[^\s)]*\)\s*/g, '').trim() || url;
-        d.appendChild(a);
+        el = document.createElement('a');
+        el.href = url; el.target = '_blank'; el.rel = 'noopener noreferrer';
       } else {
-        const v = document.createElement('span');
-        v.className = 'cval'; v.textContent = value;
-        d.appendChild(v);
+        el = document.createElement('span');
       }
-      box.appendChild(d);
+      if (cls) el.className = cls;
+      el.textContent = text;
+      box.appendChild(el);
       return true;
     };
 
+    const src = httpUrl(c.source);
     let any = false;
-    any = row('Title', c.title) || any;
-    any = row('Author', c.author) || any;
-    any = row('License', c.license) || any;
-    any = row('Source', c.source) || any;
-    if (!any) any = row('', c.copyright || c.notes);       // unstructured header
-    else if (c.copyright) row('©', c.copyright);
+    any = add(c.title && clean(c.title), src, 'ctitle') || any;
+    any = add(c.author && 'by ' + clean(c.author), httpUrl(c.author)) || any;
+    any = add(c.license && clean(c.license), httpUrl(c.license)) || any;
+
+    if (!any) {                                   // unstructured header text
+      const t = (c.copyright || c.notes || '').replace(/\s+/g, ' ').trim();
+      if (t) {
+        any = add(t.length > 110 ? t.slice(0, 107) + '…' : t, null);
+        box.title = t;                            // full text on hover
+      }
+    } else if (!c.title && src) {
+      add('source', src);
+    }
 
     box.classList.toggle('hide', !any);
   }

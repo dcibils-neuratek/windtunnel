@@ -5,6 +5,11 @@ A 3D virtual wind tunnel in the browser. The air is solved with a real
 scripted particle paths. Drag a car, an airliner, a wing or a sphere around the
 test section and watch the wake react.
 
+Built by **Diego Cibils** with the help of **Claude**, for learning and
+experimentation. It is a teaching and exploration tool, not a
+certification-grade CFD package — read [Honest limitations](#honest-limitations)
+before trusting a number.
+
 ## Run it
 
 Just open `index.html` — everything is vendored, no build step, no network needed.

@@ -48,7 +48,6 @@
         <button id="mGround">On the road</button>
       </div>
       <p class="note" id="modelInfo"></p>
-      <div id="modelCredit" class="credit hide"></div>
     </div>
   </section>
 
@@ -147,6 +146,9 @@
   <button id="help" class="link">What am I looking at? ›</button>
 </aside>
 
+<!-- attribution for an uploaded model — sits on the canvas, like a photo credit -->
+<div id="modelCredit" class="hide"></div>
+
 <div id="hint">
   <b>Drag the body</b> to move it upstream/downstream &amp; vertically · <b>Shift-drag</b> it sideways ·
   Left-drag empty space to orbit · Right-drag to pan · Scroll to zoom · <b>Space</b> pause · <b>R</b> reset
@@ -192,6 +194,11 @@
   <p><b>Compare shapes against each other</b>, not against a wind-tunnel report. Tunnel blockage is held near
   10% of the test-section area, which still inflates C<sub>d</sub> somewhat. Smoke advection is time-scaled
   for visibility, so particle speed on screen is not the physical air speed.</p>
+
+  <h2>Who made this</h2>
+  <p>Built by <b>Diego Cibils</b> with the help of <b>Claude</b>, for learning and experimentation.
+  It is a teaching and exploration tool, not a certification-grade CFD package — see the limitations
+  above before trusting a number.</p>
 </div>
 
 <script src="vendor/three.min.js"></script>

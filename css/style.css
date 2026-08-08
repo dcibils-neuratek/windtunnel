@@ -99,19 +99,29 @@ button.on{background:rgba(79,208,255,.16);border-color:rgba(79,208,255,.55);colo
 #closeHelp{position:absolute;top:14px;right:14px;width:28px;height:28px;padding:0;
   border-radius:50%;font-size:16px;line-height:1}
 
-/* ---------- model credit ---------- */
-.credit{margin-top:8px;padding:7px 9px;border-radius:8px;
-  background:rgba(255,255,255,.04);border:1px solid var(--line);font-size:10.5px;line-height:1.45}
-.credit.hide{display:none}
-.chead{font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim);margin-bottom:4px}
-.crow{display:flex;gap:6px;margin:2px 0;word-break:break-word}
-.ckey{flex:0 0 46px;color:var(--dim)}
-.cval{flex:1;color:var(--txt)}
-.credit a{flex:1;color:var(--acc);text-decoration:none;border-bottom:1px dotted currentColor}
-.credit a:hover{opacity:.8}
-body.irix .credit{border-radius:0;background:rgba(255,255,255,.10);
-  box-shadow:inset 1px 1px 0 var(--lo),inset -1px -1px 0 var(--hi)}
-body.irix .credit a{color:#3a1250}
+/* ---------- model credit (canvas watermark) ---------- */
+#modelCredit{position:fixed;right:14px;bottom:14px;z-index:5;
+  display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;
+  max-width:min(44vw,430px);padding:6px 12px;border-radius:999px;
+  background:rgba(10,14,20,.66);backdrop-filter:blur(10px);
+  border:1px solid var(--line);font-size:10.5px;line-height:1.3;color:var(--dim)}
+#modelCredit.hide{display:none}
+#modelCredit .ctitle{color:var(--txt);font-weight:600}
+#modelCredit .csep{opacity:.45}
+#modelCredit a{color:inherit;text-decoration:none;border-bottom:1px dotted rgba(140,170,200,.45)}
+#modelCredit a:hover{color:var(--acc);border-bottom-color:currentColor}
+body.irix #modelCredit{border-radius:0;background:var(--panel);backdrop-filter:none;
+  border:1px solid #221d38;color:var(--dim);
+  box-shadow:inset 2px 2px 0 var(--hi),inset -2px -2px 0 var(--lo)}
+body.irix #modelCredit .ctitle{color:var(--txt)}
+body.irix #modelCredit a{border-bottom-color:rgba(40,20,60,.5)}
+body.irix #modelCredit a:hover{color:#3a1250}
+
+/* the stats panel moves to the bottom-right on narrow screens — get out of it */
+@media (max-width:1100px){
+  #modelCredit{bottom:auto;top:14px;right:auto;left:50%;transform:translateX(-50%);
+    max-width:calc(100vw - 560px)}
+}
 
 /* ---------- slice legend ---------- */
 #legendBar{display:block;width:100%;height:9px;margin-top:8px;border-radius:2px}
