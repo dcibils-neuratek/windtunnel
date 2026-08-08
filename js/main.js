@@ -51,11 +51,117 @@
   const forceEMA = [0, 0, 0];
   let fCount = 0, settle = 0;
 
+  // ---- measurement ------------------------------------------------------
+  // Coefficient history, so a run can be judged and exported rather than just
+  // glanced at. Ring buffer of post-settle samples, one per lattice step.
+  const HIST = 6000;
+  const hCd = new Float32Array(HIST), hCl = new Float32Array(HIST), hCy = new Float32Array(HIST);
+  const scratch = new Float64Array(HIST);
+  let hN = 0;                 // total samples taken (may exceed HIST)
+
   /** Forces are meaningless until the wake has developed; restart averaging. */
   function resetAverages(steps) {
     forceEMA[0] = forceEMA[1] = forceEMA[2] = 0;
-    fCount = 0;
+    fCount = 0; hN = 0; havePrev = false;
     settle = steps === undefined ? 150 : steps;
+  }
+
+  /** Reference area in cells — planform for wings, frontal for everything else. */
+  function refCells() {
+    return body.def.ref === 'planform' ? sim.planformArea : sim.frontalArea;
+  }
+
+  const prevF = new Float64Array(3);
+  let havePrev = false;
+
+  /**
+   * Record one sample of the force coefficients.
+   *
+   * The momentum-exchange force carries a strong odd/even parity oscillation —
+   * measured lag-1 autocorrelation of -0.98, lag-2 of +0.98 — which is a
+   * well-known lattice Boltzmann artefact: the mean is correct but the value
+   * alternates every timestep. Averaging consecutive pairs cancels it exactly,
+   * leaving the mean untouched while cutting the scatter ~16x. Without this
+   * the trace is an unreadable band and the error bar measures the artefact
+   * rather than the flow.
+   */
+  function pushSample() {
+    if (!havePrev) { prevF.set(sim.force); havePrev = true; return; }
+    const q = 0.5 * sim.u0 * sim.u0 * refCells();
+    const i = hN % HIST;
+    hCd[i] = 0.5 * (sim.force[0] + prevF[0]) / q;
+    hCl[i] = 0.5 * (sim.force[1] + prevF[1]) / q;
+    hCy[i] = 0.5 * (sim.force[2] + prevF[2]) / q;
+    prevF.set(sim.force);
+    hN++;
+  }
+
+  /** Copy the ring into chronological order; returns the sample count. */
+  function ordered(src, out) {
+    const n = Math.min(hN, HIST);
+    const s = hN <= HIST ? 0 : hN % HIST;
+    for (let i = 0; i < n; i++) out[i] = src[(s + i) % HIST];
+    return n;
+  }
+
+  /**
+   * Mean and standard error by the blocking method.
+   *
+   * Consecutive timesteps in a shedding wake are heavily correlated, so the
+   * textbook sigma/sqrt(N) understates the true error by a large factor.
+   * Averaging into blocks longer than the correlation time decorrelates them,
+   * and the scatter *between block means* is an honest error estimate.
+   */
+  function blockStats(x, n) {
+    const B = 16;
+    const bl = Math.floor(n / B);
+    if (bl < 4) {                                  // too short to block
+      let m = 0;
+      for (let i = 0; i < n; i++) m += x[i];
+      m /= n;
+      let v = 0;
+      for (let i = 0; i < n; i++) { const d = x[i] - m; v += d * d; }
+      return { mean: m, sem: Math.sqrt(v / Math.max(1, n - 1) / n), blocked: false };
+    }
+    const used = B * bl;
+    const bm = new Float64Array(B);
+    let mean = 0;
+    for (let b = 0; b < B; b++) {
+      let s = 0;
+      for (let i = b * bl; i < (b + 1) * bl; i++) s += x[i];
+      bm[b] = s / bl; mean += bm[b];
+    }
+    mean /= B;
+    let v = 0;
+    for (let b = 0; b < B; b++) { const d = bm[b] - mean; v += d * d; }
+    return { mean, sem: Math.sqrt(v / (B - 1) / B), blocked: true, used };
+  }
+
+  /**
+   * Full statistics for the current run, or null while there is too little
+   * data. `state` is what a technician actually needs to know: is this number
+   * finished moving?
+   */
+  function runStats() {
+    const n = ordered(hCd, scratch);
+    if (n < 60) return null;
+    const cd = blockStats(scratch, n);
+
+    // still drifting? compare the two halves against the error bar
+    let m1 = 0, m2 = 0;
+    const h = n >> 1;
+    for (let i = 0; i < h; i++) m1 += scratch[i];
+    for (let i = h; i < n; i++) m2 += scratch[i];
+    m1 /= h; m2 /= (n - h);
+    const drift = Math.abs(m1 - m2);
+
+    const nl = ordered(hCl, scratch); const cl = blockStats(scratch, nl);
+    const ny = ordered(hCy, scratch); const cy = blockStats(scratch, ny);
+
+    const rel = 1.96 * cd.sem / Math.max(1e-9, Math.abs(cd.mean));
+    const drifting = drift > 2.5 * cd.sem;
+    const state = n < 400 ? 'averaging' : drifting ? 'drifting' : rel < 0.03 ? 'converged' : 'noisy';
+    return { n, cd, cl, cy, drift, rel, state };
   }
   let stepsPerFrame = 1, msPerStep = 8, fpsEMA = 60, lastT = performance.now();
 
@@ -562,13 +668,14 @@
     // wings and aircraft are quoted on planform (wing) area, everything else
     // on projected frontal area — the usual conventions in each field
     const planform = body.def.ref === 'planform';
-    const A_cells = planform ? sim.planformArea : sim.frontalArea;
+    const A_cells = refCells();
     const u0 = sim.u0;
-    const ready = fCount > 25;
+    const st = runStats();
+    const ready = !!st;
     const q_lat = 0.5 * u0 * u0 * A_cells;
-    const Cd = forceEMA[0] / q_lat;
-    const Cl = forceEMA[1] / q_lat;
-    const Cs = forceEMA[2] / q_lat;
+    const Cd = ready ? st.cd.mean : forceEMA[0] / q_lat;
+    const Cl = ready ? st.cl.mean : forceEMA[1] / q_lat;
+    const Cs = ready ? st.cy.mean : forceEMA[2] / q_lat;
 
     const mPerCell = S.lengthM / body.scale;
     const A_real = A_cells * mPerCell * mPerCell;
@@ -583,9 +690,29 @@
 
     const set = (id, v) => { document.getElementById(id).textContent = v; };
     const dots = settle > 0 ? 'settling…' : 'averaging…';
-    set('cd', ready ? Cd.toFixed(3) : dots);            // coefficients and Re are
-    set('cl', ready ? Cl.toFixed(3) : '');              // dimensionless — same in
-    set('cs', ready ? Cs.toFixed(3) : '');              // every unit system
+
+    // coefficient + 95% confidence half-width; both dimensionless, so the
+    // unit switch does not touch them
+    const setCoef = (id, mean, sem) => {
+      const el = document.getElementById(id);
+      el.textContent = '';
+      if (!ready) { el.textContent = id === 'cd' ? dots : ''; return; }
+      const v = document.createElement('span');
+      v.textContent = mean.toFixed(3);
+      el.appendChild(v);
+      const c = document.createElement('span');
+      c.className = 'ci';
+      c.textContent = ' ±' + (1.96 * sem).toFixed(3);
+      el.appendChild(c);
+    };
+    setCoef('cd', Cd, ready ? st.cd.sem : 0);
+    setCoef('cl', Cl, ready ? st.cl.sem : 0);
+    setCoef('cs', Cs, ready ? st.cy.sem : 0);
+
+    const badge = document.getElementById('convState');
+    badge.textContent = ready ? st.state + ' · n=' + st.n : (settle > 0 ? 'settling' : 'starting');
+    badge.className = 'cstate ' + (ready ? st.state : 'averaging');
+    drawTrace(st);
     set('area', fmtArea(A_real));
     document.getElementById('arealbl').textContent =
       planform ? 'Planform (ref.) area' : 'Frontal (ref.) area';
@@ -606,6 +733,140 @@
     set('grid', `${sim.nx}×${sim.ny}×${sim.nz} = ${(sim.n / 1000).toFixed(0)}k cells`);
     set('tsteps', sim.steps.toLocaleString());
   }
+  /** Cd/Cl against time, so you can see whether it has settled or is shedding. */
+  function drawTrace(st) {
+    const c = document.getElementById('trace');
+    const g = c.getContext('2d');
+    const w = c.width, h = c.height;
+    const dark = S.theme !== 'irix';
+    g.clearRect(0, 0, w, h);
+    g.fillStyle = dark ? 'rgba(255,255,255,.035)' : 'rgba(0,0,0,.10)';
+    g.fillRect(0, 0, w, h);
+    if (!st) return;
+
+    const n = ordered(hCd, scratch); const cd = scratch.slice(0, n);
+    const nl = ordered(hCl, scratch); const cl = scratch.slice(0, nl);
+
+    let lo = Infinity, hi = -Infinity;
+    for (let i = 0; i < n; i++) { if (cd[i] < lo) lo = cd[i]; if (cd[i] > hi) hi = cd[i]; }
+    for (let i = 0; i < nl; i++) { if (cl[i] < lo) lo = cl[i]; if (cl[i] > hi) hi = cl[i]; }
+    if (!(hi > lo)) hi = lo + 1;
+    const pad = (hi - lo) * 0.12;
+    lo -= pad; hi += pad;
+    const Y = v => h - (v - lo) / (hi - lo) * h;
+
+    if (lo < 0 && hi > 0) {
+      g.strokeStyle = dark ? 'rgba(255,255,255,.18)' : 'rgba(0,0,0,.25)';
+      g.beginPath(); g.moveTo(0, Y(0)); g.lineTo(w, Y(0)); g.stroke();
+    }
+    const plot = (a, len, colour) => {
+      if (len < 2) return;
+      g.strokeStyle = colour; g.lineWidth = 1; g.beginPath();
+      for (let i = 0; i < len; i++) {
+        const x = i / (len - 1) * w, y = Y(a[i]);
+        i ? g.lineTo(x, y) : g.moveTo(x, y);
+      }
+      g.stroke();
+    };
+    plot(cl, nl, dark ? 'rgba(255,180,84,.7)' : 'rgba(120,20,70,.7)');
+    plot(cd, n, dark ? 'rgba(79,208,255,.9)' : 'rgba(20,16,90,.85)');
+
+    const band = 1.96 * st.cd.sem;                  // mean and its 95% band
+    g.fillStyle = dark ? 'rgba(79,208,255,.16)' : 'rgba(20,16,90,.14)';
+    g.fillRect(0, Y(st.cd.mean + band), w,
+      Math.max(1, Y(st.cd.mean - band) - Y(st.cd.mean + band)));
+    g.strokeStyle = dark ? 'rgba(79,208,255,.55)' : 'rgba(20,16,90,.55)';
+    g.beginPath(); g.moveTo(0, Y(st.cd.mean)); g.lineTo(w, Y(st.cd.mean)); g.stroke();
+  }
+
+  /** A run report a technician can archive: conditions, results, raw series. */
+  function buildRunCSV() {
+    const st = runStats();
+    const planform = body.def.ref === 'planform';
+    const A_cells = refCells();
+    const mPerCell = S.lengthM / body.scale;
+    const A_real = A_cells * mPerCell * mPerCell;
+    const U = S.windMs, q = 0.5 * RHO_AIR * U * U;
+    const L = [];
+    const p = (k, v, u) => L.push([k, v, u === undefined ? '' : u].join(','));
+
+    L.push('Wind Tunnel run report,,');
+    L.push('parameter,value,unit');
+    p('generated', new Date().toISOString());
+    p('body', JSON.stringify(body.def.name));
+    p('body_source', body.def.custom ? 'uploaded' : 'bundled');
+    if (model && body.key === model.key && model.credit) {
+      p('model_title', JSON.stringify(model.credit.title || ''));
+      p('model_author', JSON.stringify(model.credit.author || ''));
+      p('model_license', JSON.stringify(model.credit.license || ''));
+      p('model_source', JSON.stringify(model.credit.source || ''));
+    }
+    p('grid_nx', sim.nx, 'cells'); p('grid_ny', sim.ny, 'cells'); p('grid_nz', sim.nz, 'cells');
+    p('grid_total', sim.n, 'cells');
+    p('solid_cells', sim.solidCells, 'cells');
+    p('reference_area_type', planform ? 'planform' : 'frontal');
+    p('reference_area', A_cells, 'cells');
+    p('reference_area_real', A_real.toFixed(4), 'm^2');
+    p('blockage', (100 * sim.frontalArea / (sim.ny * sim.nz)).toFixed(2), '%');
+    p('body_length', S.lengthM, 'm');
+    p('cells_per_body_length', body.scale.toFixed(2), 'cells');
+    p('wind_speed', U, 'm/s');
+    p('wind_speed_kmh', (U * 3.6).toFixed(1), 'km/h');
+    p('mach', (U / 343).toFixed(4));
+    p('dynamic_pressure', q.toFixed(2), 'Pa');
+    p('angle_of_attack', S.aoa, 'deg');
+    p('yaw', S.yaw, 'deg');
+    p('ground_plane', body.def.ground ? 'yes' : 'no');
+    p('lattice_u0', sim.u0);
+    p('lattice_tau', sim.tau.toFixed(6));
+    p('lattice_nu', sim.nu.toExponential(4));
+    p('les_smagorinsky', sim.les ? 'on' : 'off');
+    p('smagorinsky_C', sim.csm);
+    p('reynolds_simulated', Math.round(sim.u0 * body.scale / sim.nu));
+    p('reynolds_full_scale', Math.round(U * S.lengthM / NU_AIR));
+    p('timesteps_total', sim.steps);
+    p('samples', st ? st.n : 0);
+    p('convergence', st ? st.state : 'not started');
+
+    L.push(',,');
+    L.push('result,mean,ci95,unit');
+    if (st) {
+      const row = (k, m, sem, u) => L.push([k, m.toFixed(5), (1.96 * sem).toFixed(5), u].join(','));
+      row('Cd', st.cd.mean, st.cd.sem, '-');
+      row('Cl', st.cl.mean, st.cl.sem, '-');
+      row('Cy', st.cy.mean, st.cy.sem, '-');
+      row('drag', st.cd.mean * q * A_real, st.cd.sem * q * A_real, 'N');
+      row('lift', st.cl.mean * q * A_real, st.cl.sem * q * A_real, 'N');
+      row('side', st.cy.mean * q * A_real, st.cy.sem * q * A_real, 'N');
+      row('power', st.cd.mean * q * A_real * U, st.cd.sem * q * A_real * U, 'W');
+    }
+    L.push(',,');
+    L.push('# ci95 is from the blocking method (16 blocks) which accounts for,,');
+    L.push('# correlation between consecutive timesteps; sigma/sqrt(N) would,,');
+    L.push('# understate it badly in a shedding wake.,,');
+    L.push(',,');
+    L.push('sample,Cd,Cl,Cy');
+    const n = ordered(hCd, scratch); const a = scratch.slice(0, n);
+    const nl = ordered(hCl, scratch); const b = scratch.slice(0, nl);
+    const ny = ordered(hCy, scratch); const c2 = scratch.slice(0, ny);
+    for (let i = 0; i < n; i++) {
+      L.push(i + ',' + a[i].toFixed(5) + ',' + b[i].toFixed(5) + ',' + c2[i].toFixed(5));
+    }
+    return L.join('\n');
+  }
+
+  function exportRun() {
+    const slug = (body.def.name || 'body').replace(/[^\w-]+/g, '_').slice(0, 40);
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const blob = new Blob([buildRunCSV()], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `windtunnel_${slug}_${S.windMs}ms_aoa${S.aoa}_${stamp}.csv`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  }
+
   // ---- units ------------------------------------------------------------
   // Everything is computed in SI internally; only the display converts, so
   // switching systems can never drift the physics.
@@ -670,6 +931,7 @@
           // running mean that turns into a 500-sample moving average
           const a = 1 / Math.min(++fCount, 500);
           for (let k = 0; k < 3; k++) forceEMA[k] += (sim.force[k] - forceEMA[k]) * a;
+          pushSample();
         }
       }
       const el = (performance.now() - t0) / stepsPerFrame;
@@ -991,6 +1253,7 @@
       sim.reset(); resetAverages();
       for (let i = 0; i < S.nParticles; i++) respawn(i, true);
     };
+    $('exportRun').onclick = exportRun;
     $('help').onclick = () => $('helpBox').classList.toggle('hide');
     $('closeHelp').onclick = () => $('helpBox').classList.add('hide');
 
@@ -1016,7 +1279,9 @@
       S, orbit,
       get sim() { return sim; },
       get body() { return body; },
-      get avg() { return { settle, fCount, force: forceEMA.slice() }; }
+      get avg() { return { settle, fCount, force: forceEMA.slice() }; },
+      get stats() { return runStats(); },
+      buildRunCSV, exportRun
     };
   }
   window.addEventListener('DOMContentLoaded', start);

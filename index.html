@@ -125,6 +125,11 @@
   <div class="s"><span>C<sub>l</sub> lift</span><b id="cl">–</b></div>
   <div class="s"><span>C<sub>y</sub> side</span><b id="cs">–</b></div>
   <div class="s dim"><span>full-scale C<sub>d</sub> (Re≫)</span><b id="refcd">–</b></div>
+  <canvas id="trace" width="256" height="52"></canvas>
+  <div class="tracefoot">
+    <span><i class="k kcd"></i>C<sub>d</sub> &nbsp;<i class="k kcl"></i>C<sub>l</sub></span>
+    <span id="convState" class="cstate">starting</span>
+  </div>
 
   <div class="sect">Forces at this wind speed</div>
   <div class="s"><span>Drag</span><b id="drag">–</b></div>
@@ -143,6 +148,7 @@
   <div class="s dim"><span>Grid</span><b id="grid">–</b></div>
   <div class="s dim"><span>Time steps</span><b id="tsteps">–</b></div>
   <div class="s dim"><span>Perf</span><b id="perf">–</b></div>
+  <button id="exportRun" class="link">⤓ Export run (CSV)</button>
   <button id="help" class="link">What am I looking at? ›</button>
 </aside>
 

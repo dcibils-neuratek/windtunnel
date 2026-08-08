@@ -73,7 +73,27 @@ button.on{background:rgba(79,208,255,.16);border-color:rgba(79,208,255,.55);colo
 #cd,#cl,#cs{color:var(--acc)}
 #drag,#lift,#power{color:var(--acc2)}
 #lift.down{color:#7ee787}
-.link{width:100%;margin-top:12px;border-style:dashed;color:var(--dim);font-size:11px}
+.link{width:100%;margin-top:8px;border-style:dashed;color:var(--dim);font-size:11px}
+#exportRun{border-style:solid;color:var(--txt);margin-top:12px}
+
+/* ---------- measurement trace ---------- */
+#trace{display:block;width:100%;height:52px;margin-top:9px;border-radius:5px}
+.tracefoot{display:flex;justify-content:space-between;align-items:center;
+  margin-top:4px;font-size:9.5px;color:var(--dim)}
+.k{display:inline-block;width:9px;height:2px;margin-right:3px;vertical-align:middle}
+.kcd{background:#4fd0ff}.kcl{background:#ffb454}
+.ci{font-size:9.5px;color:var(--dim);font-weight:500}
+.cstate{padding:1px 6px;border-radius:999px;background:rgba(255,255,255,.07);
+  letter-spacing:.04em;text-transform:uppercase;font-size:9px}
+.cstate.converged{background:rgba(126,231,135,.18);color:#7ee787}
+.cstate.drifting{background:rgba(255,180,84,.18);color:#ffb454}
+.cstate.noisy,.cstate.averaging{background:rgba(255,255,255,.08);color:var(--dim)}
+body.irix #trace{border-radius:0;
+  box-shadow:inset 1px 1px 0 var(--lo),inset -1px -1px 0 var(--hi)}
+body.irix .kcd{background:#14103a}body.irix .kcl{background:#5e1340}
+body.irix .cstate{border-radius:0;background:rgba(255,255,255,.14);color:#2a2340}
+body.irix .cstate.converged{background:rgba(20,90,30,.22);color:#0d4a1c}
+body.irix .cstate.drifting{background:rgba(120,60,0,.20);color:#5e3410}
 
 /* ---------- hint ---------- */
 #hint{position:fixed;left:50%;bottom:12px;transform:translateX(-50%);z-index:5;

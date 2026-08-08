@@ -197,6 +197,33 @@ solver there is no pressure Poisson equation to invert.
 * **Boundaries** — velocity inlet, zero-gradient outlet, free-stream far field,
   optional no-slip road for ground vehicles.
 
+## Measurement
+
+Coefficients are reported as a **mean with a 95% confidence interval**, plus a
+live trace of C_d and C_l against time and a convergence state
+(`averaging` → `noisy` / `drifting` → `converged`). The point is to make it
+obvious whether a number has finished moving, instead of reading a digit that
+is still drifting.
+
+Error bars come from the **blocking method** (16 blocks) rather than `σ/√N`.
+Consecutive timesteps in a shedding wake are heavily correlated, so the naive
+formula understates the true error badly; averaging into blocks longer than the
+correlation time decorrelates them, and the scatter between block means is
+honest.
+
+Samples are **pair-averaged over consecutive timesteps** before being recorded.
+The momentum-exchange force carries a strong odd/even parity oscillation —
+measured lag-1 autocorrelation of −0.98 — a known lattice Boltzmann artefact
+whose mean is right but whose per-step value alternates. Cancelling it leaves
+the mean untouched and cuts the scatter ~16× (σ 1.50 → 0.09); without it the
+error bar measures the artefact rather than the flow.
+
+**⤓ Export run (CSV)** writes a full report: every test condition (grid, τ, ν,
+LES setting, both Reynolds numbers, reference area and type, blockage, α, yaw,
+wind speed, body length), the results with confidence intervals in both
+coefficient and newton form, the model's licence credits if it was an upload,
+and the complete raw C_d / C_l / C_y time series.
+
 ## Validation
 
 `test.html` runs the standard bluff bodies and prints measured `C_d` / `C_l`
