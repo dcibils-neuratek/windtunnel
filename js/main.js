@@ -693,7 +693,7 @@
   // give us line thickness.
   const RIB_LEN = 88;
   let ribbons, rbGeo, rbPos, rbCol, rbSeeds, rbPts, rbSpd, rbN = 0;
-  let wand, rbNY = 1, rbNZ = 1;
+  let wand, rbNY = 1, rbNZ = 1, rbAcc = 0;
 
   /**
    * Lay the wands out for the requested count.
@@ -800,6 +800,8 @@
 
   function updateRibbons(dt) {
     const k = S.flowSpeed * dt;
+
+    // Advect every point every frame, so motion stays smooth...
     for (let w = 0; w < rbN; w++) {
       const b = w * RIB_LEN * 3;
       const sb = w * RIB_LEN;
@@ -814,14 +816,29 @@
           rbPts[o] = nx2; rbPts[o + 1] = ny2; rbPts[o + 2] = nz2;
         }
       }
-      // slide the trail along and emit a fresh puff at the nozzle
-      rbPts.copyWithin(b + 3, b, b + (RIB_LEN - 1) * 3);
-      rbSpd.copyWithin(sb + 1, sb, sb + RIB_LEN - 1);
-      rbPts[b] = rbSeeds[w * 3];
-      rbPts[b + 1] = rbSeeds[w * 3 + 1];
-      rbPts[b + 2] = rbSeeds[w * 3 + 2];
-      rbSpd[sb] = rbSpd[sb + 1];
     }
+
+    // ...but emit on distance travelled, never per frame. Emitting per frame
+    // ties the ribbon's length to the frame rate: switching to the multi-core
+    // solver frees the render loop, the frame rate climbs, each frame covers
+    // less ground and the ribbons visibly shrink. Spacing them by flow
+    // distance instead makes the length a property of the flow.
+    const spacing = sim.nx / 110;
+    rbAcc += k * sim.u0;
+    let emits = 0;
+    while (rbAcc >= spacing && emits < 4) {
+      rbAcc -= spacing; emits++;
+      for (let w = 0; w < rbN; w++) {
+        const b = w * RIB_LEN * 3, sb = w * RIB_LEN;
+        rbPts.copyWithin(b + 3, b, b + (RIB_LEN - 1) * 3);
+        rbSpd.copyWithin(sb + 1, sb, sb + RIB_LEN - 1);
+        rbPts[b] = rbSeeds[w * 3];
+        rbPts[b + 1] = rbSeeds[w * 3 + 1];
+        rbPts[b + 2] = rbSeeds[w * 3 + 2];
+        rbSpd[sb] = rbSpd[sb + 1];
+      }
+    }
+    if (rbAcc > spacing * 4) rbAcc = 0;      // do not spiral after a stall
     ribbonGeometry();
   }
 
