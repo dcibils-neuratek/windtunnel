@@ -29,6 +29,8 @@
     running: true,
     smoke: true,
     ribbons: true,            // smoke-wand streaklines
+    ribbonCount: 24,
+    wandY: null, wandZ: null, // null = follow the body; set once dragged
     nParticles: 9000,
     flowSpeed: 14,
     slice: true,
@@ -323,6 +325,8 @@
 
     buildBody(true);            // before the particles — seeding needs the body
     buildParticles(nx, ny, nz);
+    S.wandY = S.wandZ = null;              // new tunnel, wand back on the body
+    buildWandMarker();
     buildRibbons();
     buildSlice();
     buildStreamlines();
@@ -332,7 +336,7 @@
     orbit.update();
 
     points.visible = S.smoke;
-    ribbons.visible = S.ribbons;
+    ribbons.visible = wand.visible = S.ribbons;
     sliceMesh.visible = S.slice;
     lineMesh.visible = S.streamlines;
     applyThemeColors();         // the meshes above were just recreated
@@ -689,11 +693,26 @@
   // give us line thickness.
   const RIB_LEN = 88;
   let ribbons, rbGeo, rbPos, rbCol, rbSeeds, rbPts, rbSpd, rbN = 0;
+  let wand, rbNY = 1, rbNZ = 1;
+
+  /**
+   * Lay the wands out for the requested count.
+   *
+   * Small counts become a single vertical rake at the body's centreline —
+   * which is how a real tunnel is used, one wand on a stick that the
+   * technician moves around the model. Only larger counts fan out spanwise.
+   */
+  function ribbonGrid(count) {
+    if (count <= 9) return [count, 1];
+    const nz = Math.ceil(count / 9);
+    return [Math.max(1, Math.round(count / nz)), nz];
+  }
 
   function buildRibbons() {
     if (ribbons) { scene.remove(ribbons); ribbons.geometry.dispose(); }
-    const ny = 7, nz = 5;
-    rbN = ny * nz;
+    const g = ribbonGrid(S.ribbonCount);
+    rbNY = g[0]; rbNZ = g[1];
+    rbN = rbNY * rbNZ;
     rbSeeds = new Float32Array(rbN * 3);
     rbPts = new Float32Array(rbN * RIB_LEN * 3);
     rbSpd = new Float32Array(rbN * RIB_LEN);   // cached at advection time
@@ -721,20 +740,33 @@
     seedRibbons();
   }
 
+  /** Where the rake sits: user-placed if dragged, otherwise on the body. */
+  function wandHome() {
+    const { ny, nz } = sim;
+    const ey = body.ext[1] * body.scale;
+    const autoY = S.ground ? body.pos[1] + ey * 0.5 : body.pos[1];
+    return {
+      y: clamp(S.wandY === null ? autoY : S.wandY, 1.6, ny - 2),
+      z: clamp(S.wandZ === null ? body.pos[2] : S.wandZ, 1.6, nz - 2)
+    };
+  }
+
   /** Park the wands on a rake upstream, sized to the body. */
   function seedRibbons() {
     if (!rbN || !body) return;
     const { ny, nz } = sim;
     const ey = body.ext[1] * body.scale, ez = body.ext[2] * body.scale;
-    const cy = S.ground ? body.pos[1] + ey * 0.5 : body.pos[1];
-    const sy = Math.min(ny * 0.42, Math.max(3, ey * (S.ground ? 1.15 : 1.5)));
-    const sz = Math.min(nz * 0.42, Math.max(3, ez * 1.5));
-    const NY = 7, NZ = 5;
-    for (let a = 0; a < NY; a++) {
-      for (let b = 0; b < NZ; b++) {
-        const w = a * NZ + b;
-        const y = clamp(cy + (a / (NY - 1) - 0.5) * 2 * sy, 1.4, ny - 1.6);
-        const z = clamp(cz(b, NZ, sz), 1.4, nz - 1.6);
+    const home = wandHome();
+    // a lone wand is a point; a rake spreads to cover the body
+    const sy = rbNY < 2 ? 0 : Math.min(ny * 0.42, Math.max(3, ey * (S.ground ? 1.15 : 1.5)));
+    const sz = rbNZ < 2 ? 0 : Math.min(nz * 0.42, Math.max(3, ez * 1.5));
+    for (let a = 0; a < rbNY; a++) {
+      for (let b = 0; b < rbNZ; b++) {
+        const w = a * rbNZ + b;
+        const fy = rbNY < 2 ? 0 : a / (rbNY - 1) - 0.5;
+        const fz = rbNZ < 2 ? 0 : b / (rbNZ - 1) - 0.5;
+        const y = clamp(home.y + fy * 2 * sy, 1.4, ny - 1.6);
+        const z = clamp(home.z + fz * 2 * sz, 1.4, nz - 1.6);
         rbSeeds[w * 3] = 2.0; rbSeeds[w * 3 + 1] = y; rbSeeds[w * 3 + 2] = z;
         for (let i = 0; i < RIB_LEN; i++) {      // start collapsed at the nozzle
           const o = (w * RIB_LEN + i) * 3;
@@ -742,7 +774,28 @@
         }
       }
     }
-    function cz(b, NZ, sz) { return body.pos[2] + (b / (NZ - 1) - 0.5) * 2 * sz; }
+    placeWandMarker(home, sy);
+  }
+
+  /** The physical wand: a pole you can grab and move, like the real thing. */
+  function buildWandMarker() {
+    if (wand) { scene.remove(wand); wand.geometry.dispose(); }
+    wand = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.55, 0.55, 1, 10),
+      new THREE.MeshStandardMaterial({
+        color: 0xc9d4e2, metalness: 0.5, roughness: 0.4,
+        emissive: 0x224455, emissiveIntensity: 0.4
+      }));
+    wand.renderOrder = 2;
+    scene.add(wand);
+  }
+
+  function placeWandMarker(home, sy) {
+    if (!wand) return;
+    const len = Math.max(2.5, sy * 2 + 2);
+    wand.position.set(2.0, home.y, home.z);
+    wand.scale.set(1, len, 1);
+    wand.visible = S.ribbons;
   }
 
   function updateRibbons(dt) {
@@ -950,6 +1003,22 @@
   function onPointerDown(e) {
     if (e.button !== 0) return;
     raycaster.setFromCamera(ndc(e), camera);
+
+    // the smoke wand is grabbed before the body — it is small and sits well
+    // upstream, so it can never steal a click meant for the model
+    if (wand && wand.visible && raycaster.intersectObject(wand, false).length) {
+      orbit.enabled = false;
+      const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(
+        new THREE.Vector3(1, 0, 0), wand.position.clone());
+      const hit = new THREE.Vector3();
+      raycaster.ray.intersectPlane(plane, hit);
+      dragging = {
+        wandDrag: true, plane,
+        off: [0, hit.y - wand.position.y, hit.z - wand.position.z]
+      };
+      return;
+    }
+
     const hits = raycaster.intersectObjects(bodyGroup.children, false);
     if (!hits.length) return;
     orbit.enabled = false;
@@ -970,6 +1039,13 @@
     const hit = new THREE.Vector3();
     if (!raycaster.ray.intersectPlane(dragging.plane, hit)) return;
     const { nx, ny, nz } = sim;
+
+    if (dragging.wandDrag) {
+      S.wandY = clamp(hit.y - dragging.off[1], 1.6, ny - 2);
+      S.wandZ = clamp(hit.z - dragging.off[2], 1.6, nz - 2);
+      seedRibbons();
+      return;
+    }
     const r = body.radius * body.scale + 2;
     body.pos[0] = clamp(hit.x - dragging.off[0], r + 2, nx - r - 2);
     if (dragging.horizontal) {
@@ -1547,6 +1623,10 @@
     slider('aoa', v => { S.aoa = v; body.pitch = -v * Math.PI / 180; syncBodyTransform(); }, v => v + '°');
     slider('yaw', v => { S.yaw = v; body.yaw = v * Math.PI / 180; syncBodyTransform(); }, v => v + '°');
     slider('re', v => { S.reKnob = v / 100; applySolverParams(); resetAverages(); }, v => v + '%');
+    slider('ribN', v => {
+      S.ribbonCount = v;
+      if (rbN) buildRibbons();              // buffers are sized to the count
+    }, v => v === 1 ? 'single wand' : v);
     slider('smokeN', v => { S.nParticles = v; buildParticles(sim.nx, sim.ny, sim.nz); }, v => v.toLocaleString());
     slider('vspeed', v => { S.flowSpeed = v; }, v => v + '×');
 
@@ -1557,6 +1637,7 @@
     toggle('tSmoke', v => { S.smoke = v; points.visible = v; }, S.smoke);
     toggle('tRibbons', v => {
       S.ribbons = v; ribbons.visible = v;
+      if (wand) wand.visible = v;
       if (v) seedRibbons();
     }, S.ribbons);
     toggle('tSlice', v => { S.slice = v; sliceMesh.visible = v; }, S.slice);
@@ -1638,6 +1719,8 @@
       get avg() { return { settle, fCount, force: forceEMA.slice() }; },
       get stats() { return runStats(); },
       get ribbons() { return ribbons; },
+      get wand() { return wand; },
+      get dragging() { return dragging; },
       stepRibbons: updateRibbons,
       buildRunCSV, exportRun
     };
