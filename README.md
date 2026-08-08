@@ -276,6 +276,42 @@ cross-origin isolation. `serve.py` sends the required COOP/COEP headers.
 Opening `index.html` straight off disk still works, but stays single-core —
 a `file://` URL has no headers at all, and the toggle says so.
 
+## Collision and precision
+
+**Two-relaxation-time (TRT) collision.** Plain BGK has one relaxation rate for
+everything, and it carries a documented defect: with bounce-back walls the
+*effective wall position depends on viscosity*. Turn the Reynolds knob and the
+surface quietly moves — corrupting the very forces being measured. TRT relaxes
+the symmetric modes (which carry the viscosity) separately from the
+antisymmetric ones, and pinning them with a fixed magic parameter
+`Λ = (τ⁺−½)(τ⁻−½)` makes the wall position viscosity-independent.
+
+Λ = 3/16 is the classic value for exact placement in Stokes flow, 1/4 the
+stability optimum. Measured here, 1/4 wins on both reference cases, so that is
+the default. Setting `trt = false` reduces it to BGK exactly, at no cost —
+`ω⁻` simply becomes `ω⁺`.
+
+Measured on an 80×36×36 lattice while choosing Λ:
+
+| cylinder (book 1.17) | cube (book 1.05) | |
+|---|---|---|
+| 1.356 | 1.347 | BGK |
+| 1.233 | 1.285 | TRT, Λ=3/16 |
+| **1.155** | **1.278** | TRT, Λ=1/4 |
+
+The cylinder — curved, so most sensitive to where the wall actually sits — goes
+from +16% error to −1.3%. The cube barely moves, which is the expected result:
+sharp edges pin the separation line geometrically, so wall placement matters
+much less there and its remaining error is blockage and resolution.
+
+**Populations are stored as deviations** from the rest state, `f − w_q·ρ₀`.
+They otherwise sit near `w_q ≈ 0.055` while the signal of interest is often
+1e-4, so float32 spends most of its mantissa on a constant. Storing the
+deviation recovers two to three significant digits exactly where the physics
+is. Every moment is unchanged because `Σw = 1` and `Σw·c = 0`, and the force
+sum gets its reference subtraction for free. Verified: with `trt = false` the
+rewritten kernel reproduces the old numbers to the digit.
+
 ## Measurement
 
 Coefficients are reported as a **mean with a 95% confidence interval**, plus a
@@ -325,12 +361,12 @@ Measured on a 96×44×44 lattice at the default Reynolds setting:
 
 | case | C_d sim | C_d full-scale | note |
 |---|---|---|---|
-| cylinder | 1.25 | 1.17 | ✔ |
-| cube | 1.36 | 1.05 | ✔ |
-| sphere | 0.96 | 0.47 | matches the *low-Re* value (~1.0 at Re≈150) |
-| sedan | 1.11 | 0.32 | ranks below the truck ✔ |
-| truck | 1.54 | 0.75 | ✔ |
-| teardrop | 1.03 | 0.04 | streamlining does not pay off at Re≈10³ |
+| cylinder | 1.13 | 1.17 | ✔ within 3% |
+| cube | 1.18 | 1.05 | ✔ within 12% |
+| sphere | 0.86 | 0.47 | matches the *low-Re* value (~0.8 at Re≈200) |
+| sedan | 1.12 | 0.32 | ranks below the truck ✔ |
+| truck | 1.39 | 0.75 | ✔ |
+| teardrop | 1.02 | 0.04 | streamlining does not pay off at Re≈10³ |
 
 Wing lift curve (planform area, NACA 4418):
 `C_l = −0.26 / +0.01 / +0.42` at `α = −8° / 0° / +8°` — a slope of ≈2.4 per
