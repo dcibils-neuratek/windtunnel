@@ -693,6 +693,71 @@
 
   function statusModel(msg) { document.getElementById('modelInfo').textContent = msg; }
 
+  /** First http(s) URL inside a string, or null. Rejects javascript: etc. */
+  function httpUrl(s) {
+    if (!s) return null;
+    const m = /https?:\/\/[^\s)>\]]+/.exec(s);
+    if (!m) return null;
+    try {
+      const u = new URL(m[0]);
+      return (u.protocol === 'http:' || u.protocol === 'https:') ? u.href : null;
+    } catch (e) { return null; }
+  }
+
+  /**
+   * Render the credits a model file carries. Licences like CC-BY require the
+   * author to be named wherever the work is shown, so this stays on screen
+   * for as long as the model is loaded.
+   *
+   * The text comes from an untrusted downloaded file, so every value goes in
+   * as textContent and links are only built from validated http(s) URLs.
+   */
+  function showCredit(c) {
+    const box = document.getElementById('modelCredit');
+    box.textContent = '';
+    if (!c) { box.classList.add('hide'); return; }
+
+    const head = document.createElement('div');
+    head.className = 'chead';
+    head.textContent = 'Model credit';
+    box.appendChild(head);
+
+    const row = (label, value) => {
+      if (!value) return false;
+      const d = document.createElement('div');
+      d.className = 'crow';
+      if (label) {
+        const k = document.createElement('span');
+        k.className = 'ckey'; k.textContent = label;
+        d.appendChild(k);
+      }
+      const url = httpUrl(value);
+      if (url) {
+        const a = document.createElement('a');
+        a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer';
+        // "Ameer Studio (https://…)" reads better as just the name
+        a.textContent = value.replace(/\s*\(https?:\/\/[^\s)]*\)\s*/g, '').trim() || url;
+        d.appendChild(a);
+      } else {
+        const v = document.createElement('span');
+        v.className = 'cval'; v.textContent = value;
+        d.appendChild(v);
+      }
+      box.appendChild(d);
+      return true;
+    };
+
+    let any = false;
+    any = row('Title', c.title) || any;
+    any = row('Author', c.author) || any;
+    any = row('License', c.license) || any;
+    any = row('Source', c.source) || any;
+    if (!any) any = row('', c.copyright || c.notes);       // unstructured header
+    else if (c.copyright) row('©', c.copyright);
+
+    box.classList.toggle('hide', !any);
+  }
+
   function loadModelFile(file) {
     const reader = new FileReader();
     statusModel('Reading ' + file.name + ' …');
@@ -710,11 +775,14 @@
       Object.keys(Shapes.BODIES).forEach(k => {
         if (Shapes.BODIES[k].custom) delete Shapes.BODIES[k];
       });
+      let credit = null;
+      try { credit = MeshIO.meta(file.name, reader.result); } catch (e) { credit = null; }
+      showCredit(credit);
       const b = Voxel.bounds(raw);
       const size = [b[3] - b[0], b[4] - b[1], b[5] - b[2]];
       const guess = Shapes.guessAxes(size, raw);
       model = {
-        name: file.name, raw, size,
+        name: file.name, raw, size, credit,
         up: guess.up, fwd: guess.forward, flip: false,
         ground: true, key: 'upload'
       };
@@ -773,6 +841,8 @@
       $('aoa').value = 0; $('aoav').textContent = '0°';
       $('yaw').value = 0; $('yawv').textContent = '0°';
       [...list.children].forEach(c => c.classList.toggle('on', c.dataset.k === k));
+      // credits belong to the upload, not to the bundled bodies
+      showCredit(model && k === model.key ? model.credit : null);
       buildBody(true);
       sim.reset();
       resetAverages();

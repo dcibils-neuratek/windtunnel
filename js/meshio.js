@@ -213,6 +213,106 @@
     return out;
   }
 
+  // ---- attribution -----------------------------------------------------
+  // Most model sites ship credits inside the file. glTF has a standard place
+  // for it (asset.copyright and asset.extras, which is what Sketchfab fills
+  // in); OBJ and STL only have comment headers, so those are best-effort.
+  //
+  // Everything here is untrusted text from a downloaded file, so the caller
+  // must render it as text and validate any URL before making it a link.
+
+  function pickFields(txt) {
+    const m = {};
+    const grab = (key) => {
+      const re = new RegExp('^[#\\s]*' + key + '\\s*[:=]\\s*(.+)$', 'im');
+      const hit = re.exec(txt);
+      return hit ? hit[1].trim() : undefined;
+    };
+    m.title = grab('title') || grab('name');
+    m.author = grab('author') || grab('creator') || grab('artist') || grab('by');
+    m.license = grab('licen[cs]e');
+    m.source = grab('source') || grab('url');
+    return m;
+  }
+
+  function metaFromGLTF(g) {
+    const a = (g && g.asset) || {};
+    const x = a.extras || {};
+    const m = {
+      title: x.title, author: x.author, license: x.license,
+      source: x.source, copyright: a.copyright, generator: a.generator
+    };
+    // some exporters put everything in one copyright string instead
+    if (a.copyright && !m.author && !m.license) {
+      Object.assign(m, pickFields(a.copyright));
+    }
+    return m;
+  }
+
+  /** Read just the JSON chunk of a GLB — no geometry decoding. */
+  function glbJSON(buf) {
+    const dv = new DataView(buf);
+    if (buf.byteLength < 20 || dv.getUint32(0, true) !== 0x46546C67) return null;
+    const total = Math.min(dv.getUint32(8, true), buf.byteLength);
+    let o = 12;
+    while (o + 8 <= total) {
+      const len = dv.getUint32(o, true), type = dv.getUint32(o + 4, true);
+      if (type === 0x4E4F534A) {
+        try {
+          return JSON.parse(new TextDecoder().decode(new Uint8Array(buf, o + 8, len)));
+        } catch (e) { return null; }
+      }
+      o = o + 8 + len + ((4 - (len & 3)) & 3);
+    }
+    return null;
+  }
+
+  const printable = (s) => s.replace(/[^\x20-\x7E -￿]+/g, ' ').trim();
+
+  /**
+   * Best-effort credits for a model file.
+   * @returns {title,author,license,source,copyright,generator,notes} — any
+   *          field may be missing; returns null when the file says nothing.
+   */
+  function meta(name, buf) {
+    const ext = (name.split('.').pop() || '').toLowerCase();
+    let m = null;
+
+    if (ext === 'glb' || (buf.byteLength > 12 &&
+      new DataView(buf).getUint32(0, true) === 0x46546C67)) {
+      const g = glbJSON(buf);
+      if (g) m = metaFromGLTF(g);
+    } else if (ext === 'gltf') {
+      try { m = metaFromGLTF(JSON.parse(new TextDecoder().decode(new Uint8Array(buf)))); }
+      catch (e) { /* not our problem here */ }
+    } else if (ext === 'stl' && isBinarySTL(buf)) {
+      const head = printable(new TextDecoder().decode(new Uint8Array(buf, 0, 80)));
+      if (head) m = Object.assign({ notes: head }, pickFields(head));
+    } else {
+      // OBJ (and ASCII STL): leading comment block
+      const head = new TextDecoder().decode(
+        new Uint8Array(buf, 0, Math.min(4096, buf.byteLength)));
+      const lines = [];
+      for (const raw of head.split('\n')) {
+        const l = raw.trim();
+        if (l.startsWith('#')) { lines.push(printable(l.replace(/^#+\s?/, ''))); }
+        else if (l) break;                    // comments only run at the top
+        if (lines.length > 12) break;
+      }
+      const block = lines.filter(Boolean).join('\n');
+      if (block) m = Object.assign({ notes: block }, pickFields(block));
+    }
+
+    if (!m) return null;
+    for (const k of Object.keys(m)) {
+      if (typeof m[k] === 'string') {
+        m[k] = printable(m[k]).slice(0, 300);
+        if (!m[k]) delete m[k];
+      } else if (m[k] === undefined) delete m[k];
+    }
+    return Object.keys(m).length ? m : null;
+  }
+
   // ---- dispatch --------------------------------------------------------
   /**
    * @param name  file name (used for the extension)
@@ -239,5 +339,7 @@
     throw new Error('Unrecognised file. Supported: .obj, .stl, .glb');
   }
 
-  global.MeshIO = { parse, parseOBJ, parseGLB, parseSTLBinary, parseSTLAscii, isBinarySTL };
+  global.MeshIO = {
+    parse, meta, parseOBJ, parseGLB, parseSTLBinary, parseSTLAscii, isBinarySTL
+  };
 })(window);

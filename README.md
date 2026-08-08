@@ -103,6 +103,19 @@ Model **size in the tunnel** comes from the frontal area measured off the voxel
 grid, not an assumed bounding-box fill — a thin-winged airliner fills ~20% of
 its box and a brick fills 100%, and guessing wrong throws the blockage off.
 
+**Attribution** is read out of the file and shown for as long as the model is
+loaded. glTF has a standard place for it — `asset.copyright` and
+`asset.extras`, which is what Sketchfab populates — so a CC-BY model arrives
+carrying its own title, author, licence and source URL. OBJ and ASCII STL only
+have comment headers and binary STL an 80-byte one, so those are parsed
+best-effort for `Title:` / `Author:` / `License:` / `Source:` lines. Nothing is
+shown when the file says nothing.
+
+That text is untrusted input from a downloaded file, so it is rendered
+exclusively via `textContent`, and links are only built from URLs that parse as
+`http`/`https` (a `javascript:` source is shown as plain text, never as an
+anchor) with `rel="noopener noreferrer"`.
+
 Set the real vehicle length with the **Body length** slider — that is what
 converts coefficients into newtons.
 
