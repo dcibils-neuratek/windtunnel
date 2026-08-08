@@ -67,10 +67,19 @@
   const scratch = new Float64Array(HIST);
   let hN = 0;                 // total samples taken (may exceed HIST)
 
+  // An explicit capture window. The rolling buffer above always runs because
+  // the live coefficients, error bars and trace are computed from it, but it
+  // is only the last HIST steps — an arbitrary window, not one you chose.
+  // Capture records a deliberate measurement instead, and export prefers it.
+  const CAP_MAX = 250000;
+  let cap = { on: false, cd: [], cl: [], cy: [], from: 0, to: 0 };
+
   /** Forces are meaningless until the wake has developed; restart averaging. */
   function resetAverages(steps) {
     forceEMA[0] = forceEMA[1] = forceEMA[2] = 0;
     fCount = 0; hN = 0; havePrev = false;
+    // a capture spanning a change of test conditions would be meaningless
+    if (cap.on) { cap.on = false; cap.to = sim ? sim.steps : 0; updateCaptureUI(); }
     settle = steps === undefined ? 150 : steps;
   }
 
@@ -105,11 +114,34 @@
     if (!havePrev) { prevF.set(sim.force); havePrev = true; return; }
     const q = 0.5 * sim.u0 * sim.u0 * refCells();
     const i = hN % HIST;
-    hCd[i] = 0.5 * (sim.force[0] + prevF[0]) / q;
-    hCl[i] = 0.5 * (sim.force[1] + prevF[1]) / q;
-    hCy[i] = 0.5 * (sim.force[2] + prevF[2]) / q;
+    const cd = 0.5 * (sim.force[0] + prevF[0]) / q;
+    const cl = 0.5 * (sim.force[1] + prevF[1]) / q;
+    const cy = 0.5 * (sim.force[2] + prevF[2]) / q;
+    hCd[i] = cd; hCl[i] = cl; hCy[i] = cy;
     prevF.set(sim.force);
     hN++;
+    if (cap.on && cap.cd.length < CAP_MAX) {
+      cap.cd.push(cd); cap.cl.push(cl); cap.cy.push(cy);
+      cap.to = sim.steps;
+    }
+  }
+
+  function setCapture(on) {
+    if (on) cap = { on: true, cd: [], cl: [], cy: [], from: sim.steps, to: sim.steps };
+    else { cap.on = false; cap.to = sim.steps; }
+    updateCaptureUI();
+  }
+
+  function updateCaptureUI() {
+    const b = document.getElementById('capBtn');
+    const e = document.getElementById('exportRun');
+    if (!b || !e) return;
+    const n = cap.cd.length;
+    b.textContent = cap.on ? `■ Stop capture · ${n.toLocaleString()}`
+      : n ? `● Capture again (${n.toLocaleString()} held)` : '● Start capture';
+    b.classList.toggle('on', cap.on);
+    e.textContent = n ? `⤓ Export capture (${n.toLocaleString()})`
+      : '⤓ Export live window';
   }
 
   /** Copy the ring into chronological order; returns the sample count. */
@@ -1126,6 +1158,7 @@
     badge.textContent = ready ? st.state + ' · n=' + st.n : (settle > 0 ? 'settling' : 'starting');
     badge.className = 'cstate ' + (ready ? st.state : 'averaging');
     drawTrace(st);
+    if (cap.on) updateCaptureUI();          // live sample count
     set('area', fmtArea(A_real));
     document.getElementById('arealbl').textContent =
       planform ? 'Planform (ref.) area' : 'Frontal (ref.) area';
@@ -1194,7 +1227,24 @@
 
   /** A run report a technician can archive: conditions, results, raw series. */
   function buildRunCSV() {
-    const st = runStats();
+    // Prefer a deliberate capture; fall back to the rolling live window so
+    // the button always produces something useful.
+    const captured = cap.cd.length > 0;
+    const series = captured
+      ? { cd: cap.cd, cl: cap.cl, cy: cap.cy, n: cap.cd.length }
+      : (() => {
+        const n = ordered(hCd, scratch); const cd = Array.from(scratch.slice(0, n));
+        ordered(hCl, scratch); const cl = Array.from(scratch.slice(0, n));
+        ordered(hCy, scratch); const cy = Array.from(scratch.slice(0, n));
+        return { cd, cl, cy, n };
+      })();
+    const st = series.n >= 60 ? {
+      n: series.n,
+      cd: blockStats(series.cd, series.n),
+      cl: blockStats(series.cl, series.n),
+      cy: blockStats(series.cy, series.n),
+      state: captured ? 'captured window' : (runStats() || {}).state || 'live window'
+    } : null;
     const planform = body.def.ref === 'planform';
     const A_cells = refCells();
     const mPerCell = S.lengthM / body.scale;
@@ -1238,6 +1288,12 @@
     p('reynolds_simulated', Math.round(sim.u0 * body.scale / sim.nu));
     p('reynolds_full_scale', Math.round(U * S.lengthM / NU_AIR));
     p('timesteps_total', sim.steps);
+    p('sample_source', captured ? 'explicit capture' : 'rolling live window');
+    if (captured) {
+      p('capture_from_step', cap.from);
+      p('capture_to_step', cap.to);
+      if (cap.cd.length >= CAP_MAX) p('capture_truncated_at', CAP_MAX, 'samples');
+    }
     p('samples', st ? st.n : 0);
     p('convergence', st ? st.state : 'not started');
 
@@ -1259,11 +1315,9 @@
     L.push('# understate it badly in a shedding wake.,,');
     L.push(',,');
     L.push('sample,Cd,Cl,Cy');
-    const n = ordered(hCd, scratch); const a = scratch.slice(0, n);
-    const nl = ordered(hCl, scratch); const b = scratch.slice(0, nl);
-    const ny = ordered(hCy, scratch); const c2 = scratch.slice(0, ny);
-    for (let i = 0; i < n; i++) {
-      L.push(i + ',' + a[i].toFixed(5) + ',' + b[i].toFixed(5) + ',' + c2[i].toFixed(5));
+    for (let i = 0; i < series.n; i++) {
+      L.push(i + ',' + series.cd[i].toFixed(5) + ',' +
+        series.cl[i].toFixed(5) + ',' + series.cy[i].toFixed(5));
     }
     return L.join('\n');
   }
@@ -1707,7 +1761,9 @@
       for (let i = 0; i < S.nParticles; i++) respawn(i, true);
       seedRibbons();
     };
+    $('capBtn').onclick = () => setCapture(!cap.on);
     $('exportRun').onclick = exportRun;
+    updateCaptureUI();
     $('help').onclick = () => $('helpBox').classList.toggle('hide');
     $('closeHelp').onclick = () => $('helpBox').classList.add('hide');
 
@@ -1735,6 +1791,8 @@
       get body() { return body; },
       get avg() { return { settle, fCount, force: forceEMA.slice() }; },
       get stats() { return runStats(); },
+      get capture() { return cap; },
+      accumulate,
       get ribbons() { return ribbons; },
       get wand() { return wand; },
       get dragging() { return dragging; },

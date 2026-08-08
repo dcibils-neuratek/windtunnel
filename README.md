@@ -297,11 +297,25 @@ whose mean is right but whose per-step value alternates. Cancelling it leaves
 the mean untouched and cuts the scatter ~16× (σ 1.50 → 0.09); without it the
 error bar measures the artefact rather than the flow.
 
-**⤓ Export run (CSV)** writes a full report: every test condition (grid, τ, ν,
-LES setting, both Reynolds numbers, reference area and type, blockage, α, yaw,
-wind speed, body length), the results with confidence intervals in both
-coefficient and newton form, the model's licence credits if it was an upload,
-and the complete raw C_d / C_l / C_y time series.
+**● Start capture** marks a deliberate measurement window. Nothing is recorded
+for export until you press it, and it stops the moment you press it again — or
+automatically if you change the test conditions, since a capture spanning a
+change of body, angle or wind speed would be meaningless.
+
+**⤓ Export** writes a full report: every test condition (grid, τ, ν, LES
+setting, both Reynolds numbers, reference area and type, blockage, α, yaw, wind
+speed, body length), the results with confidence intervals in both coefficient
+and newton form, the model's licence credits if it was an upload, and the raw
+C_d / C_l / C_y series. Statistics in the report are computed over the captured
+window, not the live one.
+
+With no capture it falls back to exporting the rolling live window, so the
+button always produces something; the CSV records which of the two it was in
+`sample_source`.
+
+A small rolling buffer always runs regardless — the live coefficients, error
+bars and trace chart are computed from it — but that is only the last few
+thousand steps, an arbitrary window rather than one you chose.
 
 ## Validation
 
