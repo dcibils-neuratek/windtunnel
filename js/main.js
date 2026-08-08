@@ -22,6 +22,8 @@
     ground: true,
     les: true,
     reKnob: 0.62,             // 0..1 -> relaxation time
+    rollingRoad: false,       // moving ground + spinning wheels; opt-in,
+                              // because it needs a resolved ride height
     running: true,
     smoke: true,
     nParticles: 9000,
@@ -427,6 +429,7 @@
     bodyGroup.visible = S.showBody;
     needsVoxelize = true;
     resetAverages(90);
+    updateRoadNote();
   }
 
   /** Re-tint the 3D scene for the current theme (also after a rebuild). */
@@ -447,6 +450,40 @@
     document.getElementById('tModern').classList.toggle('on', t === 'modern');
     document.getElementById('tIrix').classList.toggle('on', t === 'irix');
     applyThemeColors();
+  }
+
+  /** Explain what the tunnel floor is currently doing. */
+  function updateRoadNote() {
+    const el = document.getElementById('roadNote');
+    const btn = document.getElementById('tRoad');
+    if (!el || !btn) return;
+    btn.classList.toggle('off', !S.ground);
+    if (!S.ground) {
+      el.textContent = 'No ground plane for this body.';
+      el.classList.remove('warn');
+      return;
+    }
+    if (!S.rollingRoad) {
+      el.textContent = 'Fixed floor: a boundary layer grows along it and the wheels ' +
+        'are stationary — the classic static-floor tunnel.';
+      el.classList.remove('warn');
+      return;
+    }
+    const gap = sim.rideHeight;
+    let t = body.hasWheels
+      ? 'Road sweeps past at wind speed and the wheels roll with it: contact patch ' +
+      'at +U, crown at −U, so the crown meets the air at twice the wind speed. '
+      : 'Road sweeps past at wind speed. No identifiable wheels on this body, so ' +
+      'nothing is rotating. ';
+    // At an unresolved ride height a moving road blows up: measured -2% on a
+    // 5.8-cell gap but +242% on a 1.8-cell one.
+    const bad = gap > 0 && gap < 4;
+    t += bad
+      ? `⚠ Ride height is only ${gap} cells — too coarse for the underbody shear layer, ` +
+      'so this result is not trustworthy. Raise the body or use a finer grid.'
+      : `Ride height ${gap} cells.`;
+    el.textContent = t;
+    el.classList.toggle('warn', bad);
   }
 
   function applySolverParams() {
@@ -918,8 +955,13 @@
     fpsEMA += (1 / Math.max(1e-3, dt) - fpsEMA) * 0.08;
 
     if (needsVoxelize) {
-      sim.voxelize(body.makeTest(), body.box(), S.ground);
+      // a rolling road and spinning wheels are one physical setup: a car on a
+      // road rather than a model bolted to a static tunnel floor
+      const rolling = S.rollingRoad && S.ground;
+      const wheelVel = rolling ? body.makeWheelVel(sim.u0) : null;
+      sim.voxelize(body.makeTest(), body.box(), S.ground, wheelVel, rolling ? sim.u0 : 0);
       needsVoxelize = false;
+      updateRoadNote();
     }
 
     if (S.running) {
@@ -1219,6 +1261,11 @@
     toggle('tLines', v => { S.streamlines = v; lineMesh.visible = v; }, S.streamlines);
     toggle('tBody', v => { S.showBody = v; bodyGroup.visible = v; }, S.showBody);
     toggle('tLes', v => { S.les = v; sim.les = v; }, S.les);
+    toggle('tRoad', v => {
+      S.rollingRoad = v;
+      needsVoxelize = true; resetAverages();
+      updateRoadNote();
+    }, S.rollingRoad);
     lineMesh.visible = S.streamlines;
 
     const setUnits = (u) => {

@@ -197,6 +197,33 @@ solver there is no pressure Poisson equation to invert.
 * **Boundaries** — velocity inlet, zero-gradient outlet, free-stream far field,
   optional no-slip road for ground vehicles.
 
+## Rolling road and rotating wheels
+
+Optional (off by default). A real car meets still air over a moving road; a
+model bolted to a static tunnel floor does not, which is why full-scale tunnels
+run a rolling belt. Turning it on makes the floor sweep past at wind speed and
+spins the wheels with it.
+
+Both are **moving no-slip walls**, implemented as the standard bounce-back
+correction `f_q = f_q̄ + 2·w_q·ρ·(c_q·u_w)/c_s²`, with the wall velocity stored
+per solid cell. Wheels roll without slip, so `ω = u₀/R` about the axle: the
+contact patch sits at `+u₀` matching the road and the crown at `−u₀`, meaning
+the crown meets the oncoming air at **twice** the free-stream speed. That is
+the whole reason rotating wheels matter. Verified directly: contact `+0.85 u₀`,
+crown `−0.85 u₀` at 0.85R, hub zero.
+
+The boundary condition is verified by the floor profile in an empty tunnel —
+static floor gives `0.21, 0.62, 0.93, 1.07…` (a clear boundary layer), rolling
+road gives `1.02, 0.92, 1.00, 1.00…` (none).
+
+**It needs a resolved ride height.** Measured on the same sedan: with a 5.8-cell
+underbody gap the rolling road changes C_d by **−2%**, which matches real
+tunnel correlation. At the default 1.8-cell gap it changes it by **+242%** —
+a one-cell gap cannot support a shear layer. The panel reports the ride height
+in cells and warns below four. Wheel rotation also needs identifiable wheel
+geometry, so it applies to the bundled vehicles; uploads get the rolling road
+only.
+
 ## Measurement
 
 Coefficients are reported as a **mean with a 95% confidence interval**, plus a

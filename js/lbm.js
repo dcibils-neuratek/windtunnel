@@ -56,6 +56,13 @@
       this.uz = new Float32Array(n);
       this.rho = new Float32Array(n);
 
+      // surface velocity of solid cells — a rolling road and spinning wheels
+      // are no-slip walls that happen to be moving
+      this.uwx = new Float32Array(n);
+      this.uwy = new Float32Array(n);
+      this.uwz = new Float32Array(n);
+      this.movingWalls = false;
+
       this.off = new Int32Array(Q);   // cell offset of c_q
       this.src = new Int32Array(Q);   // read base:  f[src[q] + i]
       this.dst = new Int32Array(Q);   // write base: g[dst[q] + i]
@@ -77,8 +84,11 @@
       this.steps = 0;
 
       this._fq = new Float64Array(Q);
+      this._wv = new Float64Array(3);
       this._col = new Uint8Array(ny * nz);   // frontal (x) projection
       this._plan = new Uint8Array(nx * nz);  // planform (y) projection
+      this._low = new Int16Array(nx * nz);   // lowest body cell per column
+      this.rideHeight = 0;
 
       this.reset();
     }
@@ -115,23 +125,35 @@
 
     /**
      * Rasterise the body into the lattice.
-     * @param inside fn(x,y,z)->bool in lattice coordinates
-     * @param box    {x0,y0,z0,x1,y1,z1}
-     * @param ground add a no-slip road at y = 0
+     * @param inside  fn(x,y,z)->bool in lattice coordinates
+     * @param box     {x0,y0,z0,x1,y1,z1}
+     * @param ground  add a no-slip road at y = 0
+     * @param wallVel optional fn(x,y,z,out)->bool giving the surface velocity
+     *                of a body cell (rotating wheels); out is [vx,vy,vz]
+     * @param roadVel optional streamwise speed of the road surface
      */
-    voxelize(inside, box, ground) {
+    voxelize(inside, box, ground, wallVel, roadVel) {
       const { nx, ny, nz, n, solid } = this;
+      const uwx = this.uwx, uwy = this.uwy, uwz = this.uwz;
       this.ground = !!ground;
+      this.movingWalls = false;
 
       for (let i = 0; i < n; i++) {
-        if (solid[i] === SOLID_OBJ) { solid[i] = FLUID; this._seedCell(i); }
+        if (solid[i] === SOLID_OBJ) {
+          solid[i] = FLUID; this._seedCell(i);
+          uwx[i] = uwy[i] = uwz[i] = 0;
+        }
       }
 
       const gy = ground ? SOLID_WALL : FLUID;
+      const rv = roadVel || 0;
+      if (rv) this.movingWalls = true;
       for (let z = 0; z < nz; z++) {
         for (let x = 0; x < nx; x++) {
           const i = x + nx * ny * z;
           if (solid[i] !== gy) { solid[i] = gy; if (gy === FLUID) this._seedCell(i); }
+          uwx[i] = gy === SOLID_WALL ? rv : 0;
+          uwy[i] = uwz[i] = 0;
         }
       }
 
@@ -141,6 +163,8 @@
 
       const col = this._col; col.fill(0);
       const plan = this._plan; plan.fill(0);
+      const low = this._low; low.fill(32767);
+      const wv = this._wv;
       let cells = 0;
       for (let z = z0; z <= z1; z++) {
         for (let y = y0; y <= y1; y++) {
@@ -150,8 +174,15 @@
               solid[i] = SOLID_OBJ;
               this._writeEq(this.f, i, 1, 0, 0, 0);
               this.ux[i] = this.uy[i] = this.uz[i] = 0; this.rho[i] = 1;
+              uwx[i] = uwy[i] = uwz[i] = 0;
+              if (wallVel && wallVel(x + 0.5, y + 0.5, z + 0.5, wv)) {
+                uwx[i] = wv[0]; uwy[i] = wv[1]; uwz[i] = wv[2];
+                this.movingWalls = true;
+              }
               col[y + ny * z] = 1;
-              plan[x + nx * z] = 1;
+              const pk = x + nx * z;
+              plan[pk] = 1;
+              if (y < low[pk]) low[pk] = y;
               cells++;
             }
           }
@@ -164,6 +195,17 @@
       for (let k = 0; k < plan.length; k++) p += plan[k];
       this.planformArea = Math.max(1, p);
       this.solidCells = cells;
+
+      // Underbody gap, in cells. Columns that sit on the road (wheels) give
+      // zero, so the median of the non-zero gaps is the ride height. A gap of
+      // only one or two cells cannot support a shear layer, which makes a
+      // moving road wildly over-predict.
+      const gaps = [];
+      for (let k = 0; k < plan.length; k++) {
+        if (plan[k] && low[k] < 32767) { const g = low[k] - 1; if (g > 0) gaps.push(g); }
+      }
+      gaps.sort((a, b) => a - b);
+      this.rideHeight = gaps.length ? gaps[gaps.length >> 1] : 0;
       this._rebuildNear();
     }
 
@@ -190,6 +232,7 @@
       const solid = this.solid, near = this.near, off = this.off;
       const src = this.src, dst = this.dst;
       const ux = this.ux, uy = this.uy, uz = this.uz, rho = this.rho;
+      const uwx = this.uwx, uwy = this.uwy, uwz = this.uwz, mov = this.movingWalls;
       const scratch = this._fq;
       const tau0 = this.tau, les = this.les, cs2 = this.csm * this.csm;
       const omega0 = 1 / tau0;
@@ -220,17 +263,25 @@
                 const j = i - off[q];
                 const s = solid[j];
                 if (s) {
-                  const v = F[OPP[q] * nn + i];
-                  scratch[q] = v;
+                  const fd = F[OPP[q] * nn + i];      // population that hit the wall
+                  // Moving no-slip wall (rolling road, spinning wheel): the
+                  // reflected population is biased by the wall's tangential
+                  // velocity, f_q = f_qbar + 2*w_q*rho*(c_q . u_w)/cs^2.
+                  let corr = 0;
+                  if (mov) {
+                    const cu = EX[q] * uwx[j] + EY[q] * uwy[j] + EZ[q] * uwz[j];
+                    if (cu !== 0) corr = 6 * W[q] * rho[i] * cu;
+                  }
+                  scratch[q] = fd + corr;
                   if (s === SOLID_OBJ) {
-                    // Momentum exchange, measured relative to the rest
-                    // equilibrium w_q*rho0. Over a closed surface that
-                    // reference sums to zero, so this changes nothing there
-                    // (and kills a nasty float32 cancellation) - but for a
-                    // body sitting on the road the surface is NOT closed, and
-                    // without it the unbalanced ambient pressure swamps the
-                    // aerodynamic load.
-                    const d = 2 * (v - W[q]);
+                    // Momentum exchange c_qbar*(f_in + f_out), measured
+                    // relative to the rest equilibrium w_q*rho0. Over a closed
+                    // surface that reference sums to zero, so it changes
+                    // nothing there (and kills a nasty float32 cancellation) -
+                    // but for a body sitting on the road the surface is NOT
+                    // closed, and without it the unbalanced ambient pressure
+                    // swamps the aerodynamic load.
+                    const d = 2 * (fd - W[q]) + corr;
                     Fx -= d * EX[q]; Fy -= d * EY[q]; Fz -= d * EZ[q];
                   }
                 } else {

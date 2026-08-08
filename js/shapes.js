@@ -81,10 +81,10 @@
         { t: 'ell', c: [0.00, 0.155, 0], s: [0.500, 0.090, 0.185] },
         { t: 'ell', c: [0.05, 0.235, 0], s: [0.250, 0.080, 0.160] },
         { t: 'box', c: [0.00, 0.120, 0], s: [0.430, 0.055, 0.180] },
-        { t: 'cyl', c: [-0.290, 0.075, 0.175], s: [0.075, 0.035], r: [Math.PI / 2, 0, 0] },
-        { t: 'cyl', c: [-0.290, 0.075, -0.175], s: [0.075, 0.035], r: [Math.PI / 2, 0, 0] },
-        { t: 'cyl', c: [0.280, 0.075, 0.175], s: [0.075, 0.035], r: [Math.PI / 2, 0, 0] },
-        { t: 'cyl', c: [0.280, 0.075, -0.175], s: [0.075, 0.035], r: [Math.PI / 2, 0, 0] }
+        { t: 'cyl', wheel: true, c: [-0.290, 0.075, 0.175], s: [0.075, 0.035], r: [Math.PI / 2, 0, 0] },
+        { t: 'cyl', wheel: true, c: [-0.290, 0.075, -0.175], s: [0.075, 0.035], r: [Math.PI / 2, 0, 0] },
+        { t: 'cyl', wheel: true, c: [0.280, 0.075, 0.175], s: [0.075, 0.035], r: [Math.PI / 2, 0, 0] },
+        { t: 'cyl', wheel: true, c: [0.280, 0.075, -0.175], s: [0.075, 0.035], r: [Math.PI / 2, 0, 0] }
       ]
     },
     sports: {
@@ -96,10 +96,10 @@
         { t: 'box', c: [0.450, 0.245, 0], s: [0.045, 0.009, 0.170] },
         { t: 'box', c: [0.430, 0.205, 0.165], s: [0.020, 0.045, 0.008] },
         { t: 'box', c: [0.430, 0.205, -0.165], s: [0.020, 0.045, 0.008] },
-        { t: 'cyl', c: [-0.300, 0.070, 0.195], s: [0.070, 0.045], r: [Math.PI / 2, 0, 0] },
-        { t: 'cyl', c: [-0.300, 0.070, -0.195], s: [0.070, 0.045], r: [Math.PI / 2, 0, 0] },
-        { t: 'cyl', c: [0.290, 0.070, 0.195], s: [0.070, 0.050], r: [Math.PI / 2, 0, 0] },
-        { t: 'cyl', c: [0.290, 0.070, -0.195], s: [0.070, 0.050], r: [Math.PI / 2, 0, 0] }
+        { t: 'cyl', wheel: true, c: [-0.300, 0.070, 0.195], s: [0.070, 0.045], r: [Math.PI / 2, 0, 0] },
+        { t: 'cyl', wheel: true, c: [-0.300, 0.070, -0.195], s: [0.070, 0.045], r: [Math.PI / 2, 0, 0] },
+        { t: 'cyl', wheel: true, c: [0.290, 0.070, 0.195], s: [0.070, 0.050], r: [Math.PI / 2, 0, 0] },
+        { t: 'cyl', wheel: true, c: [0.290, 0.070, -0.195], s: [0.070, 0.050], r: [Math.PI / 2, 0, 0] }
       ]
     },
     truck: {
@@ -108,10 +108,10 @@
       parts: [
         { t: 'box', c: [0.100, 0.330, 0], s: [0.380, 0.220, 0.200] },
         { t: 'box', c: [-0.340, 0.190, 0], s: [0.160, 0.110, 0.190] },
-        { t: 'cyl', c: [-0.320, 0.080, 0.190], s: [0.080, 0.040], r: [Math.PI / 2, 0, 0] },
-        { t: 'cyl', c: [-0.320, 0.080, -0.190], s: [0.080, 0.040], r: [Math.PI / 2, 0, 0] },
-        { t: 'cyl', c: [0.300, 0.080, 0.190], s: [0.080, 0.040], r: [Math.PI / 2, 0, 0] },
-        { t: 'cyl', c: [0.300, 0.080, -0.190], s: [0.080, 0.040], r: [Math.PI / 2, 0, 0] }
+        { t: 'cyl', wheel: true, c: [-0.320, 0.080, 0.190], s: [0.080, 0.040], r: [Math.PI / 2, 0, 0] },
+        { t: 'cyl', wheel: true, c: [-0.320, 0.080, -0.190], s: [0.080, 0.040], r: [Math.PI / 2, 0, 0] },
+        { t: 'cyl', wheel: true, c: [0.300, 0.080, 0.190], s: [0.080, 0.040], r: [Math.PI / 2, 0, 0] },
+        { t: 'cyl', wheel: true, c: [0.300, 0.080, -0.190], s: [0.080, 0.040], r: [Math.PI / 2, 0, 0] }
       ]
     },
     airplane: {
@@ -403,6 +403,67 @@
           qv[1] = m[1] * ax + m[4] * ay + m[7] * az;
           qv[2] = m[2] * ax + m[5] * ay + m[8] * az;
           if (insidePrim(p, qv)) return true;
+        }
+        return false;
+      };
+    }
+
+    /** Does this body have wheels we can spin? */
+    get hasWheels() { return this.parts.some(p => p.wheel); }
+
+    /**
+     * Surface velocity of the rotating wheels, in lattice units.
+     *
+     * In the tunnel frame the car stands still and the road sweeps past at
+     * +u0. A wheel rolling without slip must match the road at its contact
+     * patch, so omega = u0/R about the axle, which puts the contact point at
+     * +u0 and the crown at -u0 — the crown meets the oncoming air at twice
+     * the free-stream speed, which is exactly why a rolling road changes the
+     * answer.
+     *
+     * @returns fn(X,Y,Z,out) -> true when the point is inside a wheel
+     */
+    makeWheelVel(u0) {
+      this._updateMat();
+      const M = this.M, P = this.pos, s = this.scale, inv = 1 / s;
+      const wheels = [];
+      for (const p of this.parts) {
+        if (!p.wheel) continue;
+        const m = p.m;
+        // the cylinder's own axis is its local +y; take it to body space,
+        // then to world. Normalise the sense so it always points along +z.
+        let ab = [m[1], m[4], m[7]];
+        if (ab[2] < 0) ab = [-ab[0], -ab[1], -ab[2]];
+        const aw = [0, 0, 0], cw = [0, 0, 0];
+        for (let i = 0; i < 3; i++) {
+          aw[i] = M[i * 3] * ab[0] + M[i * 3 + 1] * ab[1] + M[i * 3 + 2] * ab[2];
+          cw[i] = P[i] + s * (M[i * 3] * p.c[0] + M[i * 3 + 1] * p.c[1] + M[i * 3 + 2] * p.c[2]);
+        }
+        const R = p.s[0] * s;
+        wheels.push({ p, m, c: p.c, axis: aw, centre: cw, omega: R > 0 ? u0 / R : 0 });
+      }
+      if (!wheels.length) return null;
+
+      const l = [0, 0, 0], qv = [0, 0, 0];
+      return function (X, Y, Z, out) {
+        const dx = X - P[0], dy = Y - P[1], dz = Z - P[2];
+        l[0] = (M[0] * dx + M[3] * dy + M[6] * dz) * inv;
+        l[1] = (M[1] * dx + M[4] * dy + M[7] * dz) * inv;
+        l[2] = (M[2] * dx + M[5] * dy + M[8] * dz) * inv;
+        for (let k = 0; k < wheels.length; k++) {
+          const w = wheels[k], m = w.m, c = w.c;
+          const ax = l[0] - c[0], ay = l[1] - c[1], az = l[2] - c[2];
+          qv[0] = m[0] * ax + m[3] * ay + m[6] * az;
+          qv[1] = m[1] * ax + m[4] * ay + m[7] * az;
+          qv[2] = m[2] * ax + m[5] * ay + m[8] * az;
+          if (!insidePrim(w.p, qv)) continue;
+          // u = omega * (axis x r), r measured from the wheel centre
+          const rx = X - w.centre[0], ry = Y - w.centre[1], rz = Z - w.centre[2];
+          const a = w.axis, o = w.omega;
+          out[0] = o * (a[1] * rz - a[2] * ry);
+          out[1] = o * (a[2] * rx - a[0] * rz);
+          out[2] = o * (a[0] * ry - a[1] * rx);
+          return true;
         }
         return false;
       };
