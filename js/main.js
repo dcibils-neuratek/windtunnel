@@ -713,7 +713,7 @@
     rbGeo.setAttribute('color', new THREE.BufferAttribute(rbCol, 3));
     rbGeo.setIndex(idx);
     ribbons = new THREE.Mesh(rbGeo, new THREE.MeshBasicMaterial({
-      vertexColors: true, transparent: true, opacity: 0.9,
+      vertexColors: true, transparent: true, opacity: 0.62,
       side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending
     }));
     ribbons.frustumCulled = false;
@@ -775,7 +775,7 @@
   /** Expand each polyline into camera-facing quads. */
   function ribbonGeometry() {
     const cx = camera.position.x, cy = camera.position.y, cz = camera.position.z;
-    const half = Math.max(0.3, sim.nx / 150);
+    const half = Math.max(0.14, sim.nx / 320);
     const col = [0, 0, 0], u0 = sim.u0;
     for (let w = 0; w < rbN; w++) {
       const b = w * RIB_LEN * 3;
@@ -803,8 +803,10 @@
         rbPos[vo] = x + sx * hw; rbPos[vo + 1] = y + sy * hw; rbPos[vo + 2] = z + sz2 * hw;
         rbPos[vo + 3] = x - sx * hw; rbPos[vo + 4] = y - sy * hw; rbPos[vo + 5] = z - sz2 * hw;
         cmap(rbSpd[w * RIB_LEN + i] / u0 * K_SPEED, col);
-        // mostly white like real smoke, tinted a little by speed
-        const g = 0.75 * fade * grow;
+        // mostly white like real smoke, tinted a little by speed. Kept dim
+        // because additive blending piles up wherever ribbons overlap, and
+        // the model has to stay readable through them.
+        const g = 0.34 * fade * grow;
         const r0 = (0.55 + 0.45 * col[0]) * g,
           g0 = (0.55 + 0.45 * col[1]) * g,
           b0 = (0.55 + 0.45 * col[2]) * g;
